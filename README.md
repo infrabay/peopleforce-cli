@@ -89,7 +89,8 @@ peopleforce leave requests create --set employee_id:=7 --set leave_type_id:=2 \
   --set starts_on=2026-08-01 --set ends_on=2026-08-05
 
 # --set key=value (string), key:=json (typed), dots nest
-peopleforce employees update 123 --set custom_fields:='[{"id":1,"value":"x"}]'
+# custom fields are set flat by internal_name (see `peopleforce employee-fields list`)
+peopleforce employees update 123 --set github=octocat --set address.city=Kyiv
 
 # whole body from a file or stdin
 peopleforce employees create --input @new-employee.json
