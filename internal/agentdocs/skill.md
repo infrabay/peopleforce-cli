@@ -1,0 +1,104 @@
+---
+name: peopleforce
+description: Query and manage PeopleForce HR data (employees, leave requests, tasks, teams, org structure, recruitment) via the peopleforce CLI. Use whenever the user asks about employees, vacations/leave, HR tasks, teams, departments, or anything stored in PeopleForce.
+---
+
+# PeopleForce CLI
+
+`peopleforce` is a command-line client for the PeopleForce HR API, built for
+non-interactive use by agents.
+
+## Auth
+
+Requires an API token in `PEOPLEFORCE_API_KEY` (or a config-file profile).
+Verify before doing work:
+
+```bash
+peopleforce auth status   # exit 0 = authenticated, 3 = missing/rejected key
+```
+
+## Output contract
+
+- stdout: data only. JSON by default, always shaped `{"data": ..., "meta": {...}}`.
+  Lists put pagination in `meta` (`page`, `pages`, `count`, `items`).
+- stderr: diagnostics; errors are structured `{"error": {"type", "status", "message", "detail"}}`.
+- Exit codes: `0` ok · `2` usage · `3` auth · `4` not found · `5` validation ·
+  `6` rate-limited · `7` server error · `8` network.
+
+Trim tokens with the built-in jq (no external jq needed) or field projection:
+
+```bash
+peopleforce employees list --jq '.data[] | {id, email}'
+peopleforce employees list --fields id,full_name,email
+```
+
+When both are given, `--jq` wins and `--fields` is ignored.
+
+## Discovering commands
+
+```bash
+peopleforce commands              # entire command tree as JSON, one call
+peopleforce api ops               # all ~200 API operations (method, path)
+peopleforce api describe GET /employees   # params/body schema of one op
+```
+
+Curated commands cover employees, leave, tasks, teams, departments, divisions,
+locations, positions, holidays, calendars, termination reference data. Every
+other endpoint is reachable through the escape hatch:
+
+```bash
+peopleforce api call GET '/recruitment/vacancies?page=1'
+peopleforce api call POST /working_patterns --set name="4-day week"
+```
+
+## Common recipes
+
+```bash
+# Active employees (repeatable ID filter)
+peopleforce employees list --status active --ids 12 --ids 14
+
+# Everyone hired this year, all pages, id+email only
+peopleforce employees list --hired-on-gte 2026-01-01 --all --jq '.data[] | {id, email}'
+
+# One employee with leave balances
+peopleforce employees get 123
+peopleforce employees leave-balances 123
+
+# Pending leave requests / create a leave request
+peopleforce leave requests pending
+peopleforce leave requests create --set employee_id:=7 --set leave_type_id:=2 \
+  --set starts_on=2026-08-01 --set ends_on=2026-08-05
+
+# Upload a document
+peopleforce employees documents upload 42 --document @contract.pdf \
+  --name "Contract" --document-folder-id 3
+```
+
+## Writing data
+
+- Request bodies: typed flags for simple fields, `--set key=value` /
+  `--set key:=json` for anything, `--input @file.json` or `--input -` (stdin)
+  for whole bodies. Dots nest: `--set address.city=Kyiv`.
+- Always preview mutations first with `--dry-run` (prints method/URL/body,
+  sends nothing).
+- Destructive operations (deletes, `employees terminate`) require `--yes`
+  in non-interactive mode — there are no interactive prompts without a TTY.
+
+## Pagination and limits
+
+- Lists take `--page N` (page size is fixed server-side). `--all` follows
+  every page (capped by `--max-pages`, default 20); empty results are `[]`.
+- 429 rate limits are retried automatically (honoring Retry-After) up to
+  `--max-retries` (default 3); exhaustion exits with code 6. Transient 5xx
+  are retried only for idempotent methods — POSTs are never re-sent.
+
+## Notes
+
+- Meta commands (`commands`, `version`, `auth status`, `api ops/describe`)
+  use the same `{"data": ...}` envelope and honor `--jq`/`--fields`.
+  Plain-text exceptions: `config path`, `agents-md`, `skill install`.
+- `--set key=value` sends a string; use `key:=7` / `key:=true` for typed
+  JSON values (integers, booleans, arrays, objects).
+- Multipart uploads have curated commands (`employees documents upload`,
+  `recruitment candidates create`, `recruitment candidates documents upload`)
+  — `api call` bodies are JSON-only.

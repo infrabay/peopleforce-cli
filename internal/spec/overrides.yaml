@@ -1,0 +1,200 @@
+# Manual curation over the vendored PeopleForce OpenAPI spec.
+# This is the ONLY hand-edited input to the registry generator (internal/gen).
+#
+# Key format: "METHOD /path/template" exactly as it appears in the spec —
+# including upstream typos (see /termintation_reasons below). The generator
+# fails if a key does not match any spec operation.
+#
+# Fields per operation:
+#   command:     space-separated CLI command path; omit to leave the op
+#                reachable only via `peopleforce api call`
+#   destructive: override the default guard (default: true for DELETE)
+#   examples:    shown verbatim in --help
+#   query:       per-parameter overrides, keyed by literal wire name
+#   body:        per-field overrides, keyed by JSON/multipart field name
+
+operations:
+  # ── employees ──────────────────────────────────────────────────────────
+  "GET /employees":
+    command: employees list
+    examples:
+      - peopleforce employees list --status active --ids 12 --ids 14
+      - peopleforce employees list --hired-on-gte 2025-01-01 --all --jq '.data[] | {id, email}'
+  "POST /employees":
+    command: employees create
+    examples:
+      - peopleforce employees create --input @new-employee.json
+      - peopleforce employees create --set first_name=Jane --set last_name=Doe --set email=jane@corp.co
+  "GET /employees/{employee_id}":
+    command: employees get
+    examples:
+      - peopleforce employees get 123
+  "PUT /employees/{employee_id}":
+    command: employees update
+    examples:
+      - peopleforce employees update 123 --set middle_name=Maria
+  "GET /employees/terminated":
+    command: employees terminated
+  "GET /employees/birthdays":
+    command: employees birthdays
+  "GET /employees/anniversaries":
+    command: employees anniversaries
+  "GET /employees/{employee_id}/leave_balances":
+    command: employees leave-balances
+    examples:
+      - peopleforce employees leave-balances 123
+  "POST /employees/{employee_id}/terminate":
+    command: employees terminate
+    destructive: true
+    examples:
+      - peopleforce employees terminate 123 --effective-from 2026-08-01 --termination-type-id 1 --termination-reason-id 4 --eligible-for-rehire --dry-run
+  "POST /employees/{id}/activate":
+    command: employees activate
+  "PUT /employees/{id}/update_avatar":
+    command: employees update-avatar
+    body:
+      avatar: { type: file, file_to_data_uri: true }
+    examples:
+      - peopleforce employees update-avatar 42 --avatar @photo.png
+  "GET /employees/{employee_id}/tasks":
+    command: employees tasks
+  "GET /employees/{employee_id}/salaries":
+    command: employees salaries list
+  "POST /employees/{employee_id}/salaries":
+    command: employees salaries create
+  "PUT /employees/{employee_id}/salaries/{id}":
+    command: employees salaries update
+  "DELETE /employees/{employee_id}/salaries/{id}":
+    command: employees salaries delete
+  "GET /employees/{employee_id}/documents":
+    command: employees documents list
+  "GET /employees/{employee_id}/documents/{id}":
+    command: employees documents get
+  "POST /employees/{employee_id}/documents":
+    command: employees documents upload
+    examples:
+      - peopleforce employees documents upload 42 --document @contract.pdf --name "Contract" --document-folder-id 3
+  "DELETE /employees/{employee_id}/documents/{id}":
+    command: employees documents delete
+  "GET /employees/{employee_id}/positions":
+    command: employees positions
+  "GET /employees/{employee_id}/notes":
+    command: employees notes list
+  "POST /employees/{employee_id}/notes":
+    command: employees notes create
+
+  # ── leave ──────────────────────────────────────────────────────────────
+  "GET /leave_requests":
+    command: leave requests list
+    examples:
+      - peopleforce leave requests list --states pending --states approved --page 2
+  "GET /leave_requests/{id}":
+    command: leave requests get
+  "POST /leave_requests":
+    command: leave requests create
+    examples:
+      - peopleforce leave requests create --set employee_id:=7 --set leave_type_id:=2 --set starts_on=2026-08-01 --set ends_on=2026-08-05
+  "DELETE /leave_requests/{id}":
+    command: leave requests delete
+  "GET /leave_requests/pending":
+    command: leave requests pending
+  "POST /leave_adjustments":
+    command: leave adjustments create
+  "GET /leave_types":
+    command: leave types list
+  "GET /leave_policies":
+    command: leave policies list
+
+  # ── tasks ──────────────────────────────────────────────────────────────
+  "GET /tasks":
+    command: tasks list
+  "POST /tasks":
+    command: tasks create
+  "PUT /tasks/{id}/complete":
+    command: tasks complete
+    examples:
+      - peopleforce tasks complete 55
+  "PUT /tasks/{id}/incomplete":
+    command: tasks incomplete
+
+  # ── teams ──────────────────────────────────────────────────────────────
+  "GET /teams":
+    command: teams list
+  "POST /teams":
+    command: teams create
+  "PUT /teams/{id}":
+    command: teams update
+  "DELETE /teams/{id}":
+    command: teams delete
+  "POST /teams/{team_id}/team_members":
+    command: teams members add
+  "DELETE /teams/{team_id}/team_members/{id}":
+    command: teams members remove
+
+  # ── org structure ──────────────────────────────────────────────────────
+  "GET /departments":
+    command: departments list
+  "POST /departments":
+    command: departments create
+  "PUT /departments/{id}":
+    command: departments update
+  "DELETE /departments/{id}":
+    command: departments delete
+  "GET /divisions":
+    command: divisions list
+  "POST /divisions":
+    command: divisions create
+  "PUT /divisions/{id}":
+    command: divisions update
+  "DELETE /divisions/{id}":
+    command: divisions delete
+  "GET /locations":
+    command: locations list
+  "POST /locations":
+    command: locations create
+  "GET /positions":
+    command: positions list
+  "POST /positions":
+    command: positions create
+  "PUT /positions/{id}":
+    command: positions update
+  "DELETE /positions/{id}":
+    command: positions delete
+
+  # ── recruitment (multipart ops need curated commands: `api call` is JSON-only) ──
+  "POST /recruitment/candidates":
+    command: recruitment candidates create
+    examples:
+      - peopleforce recruitment candidates create --full-name "Jane Doe" --email j@x.co --resume @resume.pdf --skills go --skills sql
+  "POST /recruitment/candidates/{id}/documents":
+    command: recruitment candidates documents upload
+    examples:
+      - peopleforce recruitment candidates documents upload 77 --attachment @cv.pdf
+
+  # ── calendars & holidays ───────────────────────────────────────────────
+  "GET /holidays":
+    command: holidays list
+  "GET /calendars":
+    command: calendars list
+
+  # ── termination reference data ─────────────────────────────────────────
+  # NOTE: update/delete of termination reasons live under a misspelled
+  # upstream path ("termintation") that must be sent verbatim.
+  "GET /termination_types":
+    command: termination types list
+  "POST /termination_types":
+    command: termination types create
+  "PUT /termination_types/{termination_type_id}":
+    command: termination types update
+  "DELETE /termination_types/{termination_type_id}":
+    command: termination types delete
+  "GET /termination_reasons":
+    command: termination reasons list
+  "POST /termination_reasons":
+    command: termination reasons create
+  "PUT /termintation_reasons/{termination_reason_id}":
+    command: termination reasons update
+    examples:
+      - peopleforce termination reasons update 5 --set name="Better offer"
+  "DELETE /termintation_reasons/{termination_reason_id}":
+    command: termination reasons delete

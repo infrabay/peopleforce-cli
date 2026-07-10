@@ -1,0 +1,5 @@
+# built binary
+/peopleforce
+
+# local Claude Code state
+.claude/
