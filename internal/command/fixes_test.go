@@ -327,11 +327,18 @@ func TestAllDegradesToSingleFetchOnNonList(t *testing.T) {
 	}
 }
 
-func TestAllWarnsWhenPaginationMetadataMissing(t *testing.T) {
+func TestAllPagesUntilEmptyWhenMetadataMissing(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		fmt.Fprint(w, `{"data":[{"id":1}]}`)
+		switch r.URL.Query().Get("page") {
+		case "1":
+			fmt.Fprint(w, `{"data":[{"id":1},{"id":2}]}`)
+		case "2":
+			fmt.Fprint(w, `{"data":[{"id":3}]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
 	}))
 	defer srv.Close()
 
@@ -339,13 +346,117 @@ func TestAllWarnsWhenPaginationMetadataMissing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	if calls != 1 {
-		t.Errorf("--all without pagination metadata must stop after one request, got %d", calls)
+	if calls != 3 {
+		t.Errorf("expected 3 requests (page until empty), got %d", calls)
+	}
+	var env struct {
+		Data []struct{ ID int `json:"id"` } `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data) != 3 {
+		t.Errorf("must collect ALL pages without metadata, got %d items: %s", len(env.Data), stdout)
 	}
 	if !strings.Contains(stderr, "no pagination metadata") {
-		t.Errorf("stderr must warn about missing pagination metadata: %q", stderr)
+		t.Errorf("stderr should note the fallback: %q", stderr)
 	}
-	if !strings.Contains(stdout, `"id": 1`) {
-		t.Errorf("first page data must still be emitted: %s", stdout)
+}
+
+func TestAllStopsWhenEndpointIgnoresPageParam(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		fmt.Fprint(w, `{"data":[{"id":1},{"id":2}]}`) // same page regardless of ?page=
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := runCLI(t, srv.URL, "employees", "list", "--all")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	// Two consecutive replays of page 1 confirm the backend ignores ?page=.
+	if calls != 3 {
+		t.Errorf("expected 3 requests (confirm replay twice), got %d", calls)
+	}
+	var env struct {
+		Data []struct{ ID int `json:"id"` } `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data) != 2 {
+		t.Errorf("replayed pages must not be appended, got %d items", len(env.Data))
+	}
+	if !strings.Contains(stderr, "replay") {
+		t.Errorf("stderr should warn about the ignored page param: %q", stderr)
+	}
+}
+
+// A page that coincidentally equals page 1 mid-stream is legitimate data —
+// it must be kept and pagination must continue (Opus review finding).
+func TestAllKeepsCoincidentallyIdenticalPage(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch r.URL.Query().Get("page") {
+		case "1":
+			fmt.Fprint(w, `{"data":[{"id":1}]}`)
+		case "2":
+			fmt.Fprint(w, `{"data":[{"id":1}]}`) // same bytes as page 1, but real
+		case "3":
+			fmt.Fprint(w, `{"data":[{"id":9}]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, code := runCLI(t, srv.URL, "employees", "list", "--all")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if calls != 4 {
+		t.Errorf("expected 4 requests, got %d", calls)
+	}
+	var env struct {
+		Data []struct{ ID int `json:"id"` } `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int
+	for _, d := range env.Data {
+		ids = append(ids, d.ID)
+	}
+	if len(ids) != 3 || ids[0] != 1 || ids[1] != 1 || ids[2] != 9 {
+		t.Errorf("coincidentally identical page must be kept in order, got %v", ids)
+	}
+}
+
+// The held page is real data when the list simply ends after it.
+func TestAllFlushesHeldPageOnEmptyPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1", "2":
+			fmt.Fprint(w, `{"data":[{"id":1}]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, code := runCLI(t, srv.URL, "employees", "list", "--all")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	var env struct {
+		Data []struct{ ID int `json:"id"` } `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data) != 2 {
+		t.Errorf("held page must be flushed when the list ends, got %d items: %s", len(env.Data), stdout)
 	}
 }

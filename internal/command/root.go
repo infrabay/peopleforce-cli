@@ -37,6 +37,7 @@ type App struct {
 
 	outFormat  string
 	jqExpr     string
+	jqRaw      bool
 	fields     []string
 	yes        bool
 	dryRun     bool
@@ -70,6 +71,7 @@ func (a *App) outputOptions() output.Options {
 	return output.Options{
 		Format: a.outFormat,
 		JQ:     a.jqExpr,
+		Raw:    a.jqRaw,
 		Fields: a.fields,
 		Pretty: true,
 	}
@@ -177,6 +179,7 @@ func NewRoot() (*cobra.Command, *App) {
 	pf.StringVar(&app.flagProfile, "profile", "", "config profile name (default \"default\")")
 	pf.StringVarP(&app.outFormat, "output", "o", "json", "output format: json, table, or ndjson")
 	pf.StringVar(&app.jqExpr, "jq", "", "filter the response with a jq expression (in-process, no jq needed)")
+	pf.BoolVarP(&app.jqRaw, "raw", "r", false, "with --jq: print string results without JSON quotes (like jq -r)")
 	pf.StringSliceVar(&app.fields, "fields", nil, "project only these fields from results")
 	pf.BoolVar(&app.yes, "yes", false, "skip confirmation for destructive operations")
 	pf.BoolVar(&app.dryRun, "dry-run", false, "print the request that would be sent, without sending it")
@@ -211,6 +214,7 @@ var groupShort = map[string]string{
 	"termination": "Termination types and reasons",
 	"recruitment": "Recruitment (candidates)",
 	"candidates":  "Recruitment candidates",
+	"employee-fields": "Employee custom field definitions (internal_name lookup)",
 	"requests":    "Leave requests",
 	"types":       "Reference types",
 	"reasons":     "Reference reasons",
@@ -272,5 +276,10 @@ func mountCurated(root *cobra.Command, app *App) {
 		parts := strings.Split(op.Command, " ")
 		parent := ensureNode(parts[:len(parts)-1])
 		parent.AddCommand(newOpCommand(app, op, parts[len(parts)-1]))
+	}
+
+	// Synthetic commands that compose registry ops.
+	if employees, ok := nodes["employees"]; ok {
+		employees.AddCommand(newEmployeesBulkUpdateCommand(app))
 	}
 }

@@ -18,7 +18,7 @@
           "flag": "ids",
           "type": "integer",
           "repeatable": true,
-          "description": "Fitler people by IDs. Multiple IDs can be provided using an ampersand separated list. For example, ids[]=1\u0026ids[]=2"
+          "description": "Filter people by IDs. Multiple IDs can be provided using an ampersand separated list. For example, ids[]=1\u0026ids[]=2"
         },
         {
           "wire_name": "emails[]",
@@ -58,13 +58,13 @@
           "wire_name": "hired_on[gte]",
           "flag": "hired-on-gte",
           "type": "string",
-          "description": "Filter people hired on or before this value."
+          "description": "Filter people hired on or after this value."
         },
         {
           "wire_name": "hired_on[lte]",
           "flag": "hired-on-lte",
           "type": "string",
-          "description": "Filter people hired on or after this value."
+          "description": "Filter people hired on or before this value."
         },
         {
           "wire_name": "manager_id",
@@ -192,13 +192,13 @@
           "wire_name": "terminated_on[gte]",
           "flag": "terminated-on-gte",
           "type": "string",
-          "description": "Filter on employees terminated on or before date."
+          "description": "Filter on employees terminated on or after date."
         },
         {
           "wire_name": "terminated_on[lte]",
           "flag": "terminated-on-lte",
           "type": "string",
-          "description": "Filter on employees terminated on or after date."
+          "description": "Filter on employees terminated on or before date."
         },
         {
           "wire_name": "page",
@@ -222,13 +222,13 @@
           "wire_name": "date[gte]",
           "flag": "date-gte",
           "type": "string",
-          "description": "Filter on employee anniversaries on or before date."
+          "description": "Filter on employee anniversaries on or after date."
         },
         {
           "wire_name": "date[lte]",
           "flag": "date-lte",
           "type": "string",
-          "description": "Filter on employee anniversaries on or after date."
+          "description": "Filter on employee anniversaries on or before date."
         },
         {
           "wire_name": "page",
@@ -252,13 +252,13 @@
           "wire_name": "date[gte]",
           "flag": "date-gte",
           "type": "string",
-          "description": "Filter employee birthdays or before this date."
+          "description": "Filter employee birthdays or after this date."
         },
         {
           "wire_name": "date[lte]",
           "flag": "date-lte",
           "type": "string",
-          "description": "Filter on employee birthdays on or after date."
+          "description": "Filter on employee birthdays on or before date."
         },
         {
           "wire_name": "page",
@@ -1930,6 +1930,7 @@
       "paginated": true
     },
     {
+      "command": "employee-fields list",
       "method": "GET",
       "path": "/employee_fields",
       "summary": "List employee fields",
@@ -1943,7 +1944,10 @@
       ],
       "body_kind": "none",
       "envelope": "list",
-      "paginated": true
+      "paginated": true,
+      "examples": [
+        "peopleforce employee-fields list --jq '.data[] | {internal_name, name, type}'"
+      ]
     },
     {
       "method": "POST",
@@ -4714,13 +4718,13 @@
           "wire_name": "created_at[gte]",
           "flag": "created-at-gte",
           "type": "string",
-          "description": "Filter external users created at or before this value."
+          "description": "Filter external users created at or after this value."
         },
         {
           "wire_name": "created_at[lte]",
           "flag": "created-at-lte",
           "type": "string",
-          "description": "Filter external users created at or after this value."
+          "description": "Filter external users created at or before this value."
         }
       ],
       "body_kind": "none",

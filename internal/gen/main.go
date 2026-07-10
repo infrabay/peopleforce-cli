@@ -43,7 +43,23 @@ type opOverride struct {
 
 type fieldOverride struct {
 	Type          string `yaml:"type"`
+	Description   string `yaml:"description"`
 	FileToDataURI bool   `yaml:"file_to_data_uri"`
+}
+
+// fixDescription repairs systematic upstream description bugs: the "Fitler"
+// typo, and range filters whose before/after wording is swapped (gte/gt mean
+// "on or after", lte/lt mean "on or before" — the spec says the opposite for
+// hired_on, terminated_on and several others).
+func fixDescription(wire, desc string) string {
+	desc = strings.ReplaceAll(desc, "Fitler", "Filter")
+	switch {
+	case strings.HasSuffix(wire, "[gte]") || strings.HasSuffix(wire, "[gt]"):
+		desc = strings.ReplaceAll(desc, " or before", " or after")
+	case strings.HasSuffix(wire, "[lte]") || strings.HasSuffix(wire, "[lt]"):
+		desc = strings.ReplaceAll(desc, " or after", " or before")
+	}
+	return desc
 }
 
 func main() {
@@ -230,10 +246,15 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 			Repeatable:  strings.HasSuffix(name, "[]"),
 			Required:    p.Required != nil && *p.Required,
 			Enum:        enumValues(schemaOf(p.Schema)),
-			Description: strings.TrimSpace(p.Description),
+			Description: fixDescription(name, strings.TrimSpace(p.Description)),
 		}
-		if fo, ok := ov.Query[name]; ok && fo.Type != "" {
-			q.Type = registry.ParamType(fo.Type)
+		if fo, ok := ov.Query[name]; ok {
+			if fo.Type != "" {
+				q.Type = registry.ParamType(fo.Type)
+			}
+			if fo.Description != "" {
+				q.Description = fo.Description
+			}
 		}
 		if name == "page" {
 			op.Paginated = true
@@ -305,6 +326,9 @@ func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
 		if fo, ok := ov.Body[name]; ok {
 			if fo.Type != "" {
 				f.Type = registry.ParamType(fo.Type)
+			}
+			if fo.Description != "" {
+				f.Description = fo.Description
 			}
 			f.FileToDataURI = fo.FileToDataURI
 		}
@@ -448,7 +472,7 @@ func flagName(wire string) string {
 
 // reservedFlags are global/persistent flag names the builder claims.
 var reservedFlags = map[string]bool{
-	"help": true, "output": true, "jq": true, "fields": true,
+	"help": true, "output": true, "jq": true, "raw": true, "fields": true,
 	"api-key": true, "api-url": true, "profile": true,
 	"all": true, "max-pages": true, "yes": true, "dry-run": true,
 	"input": true, "set": true, "max-retries": true, "timeout": true,

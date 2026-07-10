@@ -161,6 +161,13 @@ operations:
   "DELETE /positions/{id}":
     command: positions delete
 
+  # ── employee custom fields ─────────────────────────────────────────────
+  # The frequent first step before updating custom fields: find internal_name.
+  "GET /employee_fields":
+    command: employee-fields list
+    examples:
+      - peopleforce employee-fields list --jq '.data[] | {internal_name, name, type}'
+
   # ── recruitment (multipart ops need curated commands: `api call` is JSON-only) ──
   "POST /recruitment/candidates":
     command: recruitment candidates create

@@ -30,6 +30,7 @@ Trim tokens with the built-in jq (no external jq needed) or field projection:
 ```bash
 peopleforce employees list --jq '.data[] | {id, email}'
 peopleforce employees list --fields id,full_name,email
+peopleforce employees get 123 --jq .data.email --raw   # -r: strings without quotes
 ```
 
 When both are given, `--jq` wins and `--fields` is ignored.
@@ -72,7 +73,31 @@ peopleforce leave requests create --set employee_id:=7 --set leave_type_id:=2 \
 # Upload a document
 peopleforce employees documents upload 42 --document @contract.pdf \
   --name "Contract" --document-folder-id 3
+
+# Bulk-update many employees in ONE run (NDJSON in, NDJSON report out)
+printf '%s\n' \
+  '{"id": 8321, "set": {"github": "kam1kaze"}}' \
+  '{"id": 8322, "set": {"github": "octocat"}}' \
+  | peopleforce employees bulk-update --input -
+# report line per record: {"id":8321,"ok":true,"status":200,"data":{...updated record...}}
+# "data" carries the updated record — no follow-up GETs needed to verify.
+# exit 0 = all ok, 5 = some failed; --dry-run previews the whole batch.
 ```
+
+## Custom fields: write flat, read nested
+
+Custom fields are WRITTEN as flat top-level keys by `internal_name`, but READ
+back under `.data.fields.<internal_name>.value` (there is no `custom_fields`
+key). Round-trip:
+
+```bash
+peopleforce employee-fields list --jq '.data[] | {internal_name, name, type}'  # find internal_name
+peopleforce employees update 8321 --set github=kam1kaze                        # write: flat key
+peopleforce employees get 8321 --jq '.data.fields.github.value' --raw          # read: nested
+```
+
+Note: `employees list` returns a slim record without `fields`; use
+`employees get` (or the bulk-update report's `data`) to read custom fields.
 
 ## Writing data
 

@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -179,12 +180,21 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	return renderResponse(app, resp)
 }
 
-// runAllPages loops the page parameter until metadata.pages is reached,
-// concatenating data arrays into a single envelope.
+// runAllPages loops the page parameter, concatenating data arrays into a
+// single envelope. With pagination metadata it stops at metadata.pages;
+// without it (some endpoints omit it) it keeps paging until an empty page —
+// never silently returning just page 1 of a longer list.
 func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, baseQuery []httpx.QueryPair, body []byte, contentType string, maxPages int) error {
 	var allItems []json.RawMessage
 	var lastMeta map[string]any
+	var firstPage []byte
+	// A page identical to page 1 is held here until the NEXT page proves it
+	// was a coincidence (legit data) rather than a backend that ignores the
+	// page param and replays page 1 forever. Two consecutive replays of
+	// page 1 confirm the latter; anything else flushes the held page.
+	var pendingDup []json.RawMessage
 	page := 1
+	warnedNoMeta := false
 
 	for {
 		query := append([]httpx.QueryPair{}, baseQuery...)
@@ -204,23 +214,57 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			// Not a list — --all degrades to a single fetch.
 			return renderNormalized(app, n)
 		}
-		allItems = append(allItems, items...)
-		lastMeta = n.Meta
+		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
 
 		current, pages, ok := n.Page()
-		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
 		if !ok {
-			fmt.Fprintln(app.Stderr, "warning: response carries no pagination metadata; --all fetched the first page only")
-			break
+			if !warnedNoMeta {
+				fmt.Fprintln(app.Stderr, "note: response carries no pagination metadata; paging until an empty page")
+				warnedNoMeta = true
+			}
+			if page == 1 {
+				firstPage = append(firstPage[:0], n.Data...)
+			} else if len(items) > 0 && bytes.Equal(firstPage, n.Data) {
+				if pendingDup != nil {
+					fmt.Fprintln(app.Stderr, "warning: consecutive pages replay page 1 — the endpoint seems to ignore the page parameter; keeping page 1 only")
+					pendingDup = nil
+					lastMeta = n.Meta
+					break
+				}
+				pendingDup = items
+				lastMeta = n.Meta
+				if page >= maxPages {
+					fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
+					break
+				}
+				page++
+				continue
+			}
 		}
-		if current >= pages || len(items) == 0 {
+
+		if pendingDup != nil {
+			allItems = append(allItems, pendingDup...) // coincidence, keep it
+			pendingDup = nil
+		}
+		allItems = append(allItems, items...)
+		lastMeta = n.Meta
+		if len(items) == 0 || (ok && current >= pages) {
 			break
 		}
 		if page >= maxPages {
-			fmt.Fprintf(app.Stderr, "stopped at --max-pages %d (of %d total pages)\n", maxPages, pages)
+			if ok {
+				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d (of %d total pages)\n", maxPages, pages)
+			} else {
+				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
+			}
 			break
 		}
 		page++
+	}
+	if pendingDup != nil {
+		// Loop ended (empty page / --max-pages) before the hold could be
+		// confirmed either way — it was real data, keep it.
+		allItems = append(allItems, pendingDup...)
 	}
 
 	if allItems == nil {

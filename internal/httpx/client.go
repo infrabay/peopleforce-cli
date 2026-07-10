@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type Client struct {
 	HTTP       *http.Client  // if nil, a client with Timeout is used
 	Timeout    time.Duration // used when HTTP is nil (default 30s)
 	Logf       func(format string, args ...any) // optional stderr logging (--verbose, retry notices)
+
+	httpOnce   sync.Once
+	httpCached *http.Client
 }
 
 // Request is a fully specified API call. Path must already have path params
@@ -79,15 +83,20 @@ func (c *Client) baseURL() string {
 	return DefaultBaseURL
 }
 
+// httpClient is cached so sequential calls (pagination loops, bulk updates)
+// reuse one transport and its keep-alive connections.
 func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	timeout := c.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-	return &http.Client{Timeout: timeout}
+	c.httpOnce.Do(func() {
+		timeout := c.Timeout
+		if timeout == 0 {
+			timeout = 30 * time.Second
+		}
+		c.httpCached = &http.Client{Timeout: timeout}
+	})
+	return c.httpCached
 }
 
 func (c *Client) logf(format string, args ...any) {

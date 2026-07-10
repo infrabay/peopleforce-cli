@@ -42,7 +42,8 @@ base URL.
   `{"error": {"type", "status", "message", "detail"}}`.
 - **Exit codes**: `0` ok · `2` usage · `3` auth · `4` not found ·
   `5` validation · `6` rate-limited · `7` server error · `8` network.
-- Built-in filtering (no external jq): `--jq '.data[] | {id}'`, `--fields id,email`.
+- Built-in filtering (no external jq): `--jq '.data[] | {id}'`, `--fields id,email`,
+  `--raw`/`-r` for unquoted string output (like `jq -r`); with both, `--jq` wins.
 - Other formats: `--output table` (humans), `--output ndjson` (streaming).
 - Never interactive without a TTY. Destructive operations (deletes,
   `employees terminate`) require `--yes`; every mutation supports `--dry-run`.
@@ -100,7 +101,16 @@ peopleforce employees documents upload 42 --document @contract.pdf \
 # preview any mutation
 peopleforce employees terminate 123 --effective-from 2026-08-01 \
   --termination-type-id 1 --termination-reason-id 4 --eligible-for-rehire --dry-run
+
+# bulk-update: many employees in one run, NDJSON report with the updated
+# records inline (no follow-up GETs), exit 5 if any record failed
+peopleforce employees bulk-update --input @updates.jsonl        # {"id":..,"set":{..}} per line
+peopleforce employees bulk-update --input @updates.jsonl --dry-run
 ```
+
+Custom fields are written as flat top-level keys by `internal_name`
+(`--set github=...`) but read back under `.data.fields.<internal_name>.value`;
+look up internal names with `peopleforce employee-fields list`.
 
 ## Architecture
 

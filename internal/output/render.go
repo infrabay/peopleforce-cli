@@ -18,14 +18,16 @@ import (
 type Options struct {
 	Format string   // json (default) | table | ndjson
 	JQ     string   // gojq expression applied to the normalized envelope
+	Raw    bool     // with JQ: print string results without JSON quotes (jq -r)
 	Fields []string // project these fields from data items
 	Pretty bool     // pretty-print JSON (default true)
 }
 
-// Render writes the normalized envelope to w according to opts.
+// Render writes the normalized envelope to w according to opts. When both
+// JQ and Fields are set, JQ wins and Fields is ignored.
 func Render(w io.Writer, n envelope.Normalized, opts Options) error {
 	if opts.JQ != "" {
-		return renderJQ(w, n, opts.JQ)
+		return renderJQ(w, n, opts.JQ, opts.Raw)
 	}
 	if len(opts.Fields) > 0 {
 		var err error
@@ -70,18 +72,18 @@ func renderNDJSON(w io.Writer, n envelope.Normalized) error {
 	return nil
 }
 
-func renderJQ(w io.Writer, n envelope.Normalized, expr string) error {
+func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 	query, err := gojq.Parse(expr)
 	if err != nil {
 		return fmt.Errorf("invalid --jq expression: %w", err)
 	}
 	// gojq operates on any-typed values; round-trip the envelope.
-	raw, err := json.Marshal(n)
+	encoded, err := json.Marshal(n)
 	if err != nil {
 		return err
 	}
 	var input any
-	if err := json.Unmarshal(raw, &input); err != nil {
+	if err := json.Unmarshal(encoded, &input); err != nil {
 		return err
 	}
 	iter := query.Run(input)
@@ -92,6 +94,12 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string) error {
 		}
 		if err, isErr := v.(error); isErr {
 			return fmt.Errorf("--jq: %w", err)
+		}
+		if s, isString := v.(string); raw && isString {
+			if _, err := fmt.Fprintln(w, s); err != nil {
+				return err
+			}
+			continue
 		}
 		line, err := gojq.Marshal(v)
 		if err != nil {
