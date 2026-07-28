@@ -198,3 +198,47 @@ func TestNormalizeResourceWithRecordsFieldIsNotUnwrapped(t *testing.T) {
 		t.Errorf("data = %s, want the whole object %s", got, body)
 	}
 }
+
+// The shape the live API actually sends. Every other fixture in this package
+// used a flat metadata:{page,pages}, which the server never produces — so
+// Page() reported ok=false in production and --all silently fell back to
+// paging until an empty page while agents reading meta.page found nothing.
+func TestNormalizeHoistsNestedPaginationBlock(t *testing.T) {
+	body := `{"data":[{"id":1}],"metadata":{"pagination":{"page":2,"pages":5,"count":81,"items":50}}}`
+	n := Normalize([]byte(body), 200)
+
+	for k, want := range map[string]any{"page": 2.0, "pages": 5.0, "count": 81.0, "items": 50.0, "status": 200} {
+		if got := n.Meta[k]; got != want {
+			t.Errorf("meta[%s] = %v (%T), want %v", k, got, got, want)
+		}
+	}
+	if _, still := n.Meta["pagination"]; still {
+		t.Error("the nested block should be hoisted, not duplicated")
+	}
+	page, pages, ok := n.Page()
+	if !ok || page != 2 || pages != 5 {
+		t.Errorf("Page() = %d, %d, %v; want 2, 5, true", page, pages, ok)
+	}
+}
+
+// Other metadata keys must survive alongside the hoisted counters.
+func TestNormalizeKeepsNonPaginationMetadata(t *testing.T) {
+	body := `{"data":[{"id":1}],"metadata":{"pagination":{"page":1,"pages":1},"generated_at":"2026-07-28"}}`
+	n := Normalize([]byte(body), 200)
+	if n.Meta["generated_at"] != "2026-07-28" {
+		t.Errorf("meta.generated_at = %v, want the passthrough value", n.Meta["generated_at"])
+	}
+	if n.Meta["page"] != 1.0 {
+		t.Errorf("meta.page = %v, want 1", n.Meta["page"])
+	}
+}
+
+// A payload carrying its own "status" must not shadow the HTTP status, whether
+// it arrives nested, in metadata, or as a stray top-level key.
+func TestNormalizeStatusIsAlwaysTheHTTPStatus(t *testing.T) {
+	body := `{"data":[{"id":1}],"metadata":{"pagination":{"status":"paged"},"status":"meta"},"status":"top"}`
+	n := Normalize([]byte(body), 201)
+	if n.Meta["status"] != 201 {
+		t.Errorf("meta.status = %v, want the HTTP status 201", n.Meta["status"])
+	}
+}

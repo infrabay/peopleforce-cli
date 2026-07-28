@@ -72,10 +72,22 @@ func Normalize(body []byte, status int) Normalized {
 	if data, ok := top["data"]; ok {
 		listLike := false
 		if md, ok := top["metadata"]; ok {
-			var pagination map[string]any
-			if err := json.Unmarshal(md, &pagination); err == nil {
-				for k, v := range pagination {
-					meta[k] = v
+			var metadata map[string]any
+			if err := json.Unmarshal(md, &metadata); err == nil {
+				// The live API nests the counters one level deeper than the
+				// documented envelope: {"metadata":{"pagination":{page,pages,
+				// count,items}}}. Hoisting them is what makes meta.page and
+				// meta.pages actually exist — without it Page() never reports
+				// ok, so --all silently falls back to paging until an empty
+				// page and agents reading meta.page find nothing.
+				if nested, isObj := metadata["pagination"].(map[string]any); isObj {
+					for k, v := range nested {
+						setIfAbsent(meta, k, v)
+					}
+					delete(metadata, "pagination")
+				}
+				for k, v := range metadata {
+					setIfAbsent(meta, k, v)
 				}
 			}
 			listLike = true
@@ -122,6 +134,15 @@ func normalizeNull(v json.RawMessage, listLike bool) json.RawMessage {
 		return json.RawMessage("[]")
 	}
 	return v
+}
+
+// setIfAbsent keeps the first writer of a meta key. "status" is seeded from
+// the HTTP response before anything from the body is merged, so a payload
+// carrying its own "status" cannot shadow it.
+func setIfAbsent(meta map[string]any, k string, v any) {
+	if _, taken := meta[k]; !taken {
+		meta[k] = v
+	}
 }
 
 func addExtraKeys(meta map[string]any, top map[string]json.RawMessage, consumed ...string) {
