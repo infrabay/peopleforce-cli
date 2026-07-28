@@ -134,7 +134,10 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 					if err != nil {
 						return err
 					}
-					if err := json.Unmarshal(raw, &body); err != nil {
+					// Same decoder as the curated commands: plain Unmarshal
+					// routes every number through float64, silently rewriting
+					// large IDs and exact decimals on a write path.
+					if err := unmarshalPreservingNumbers(raw, &body); err != nil {
 						return usageErr("--input is not a JSON object: %v", err)
 					}
 				}
@@ -151,7 +154,15 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 				contentType = "application/json"
 			}
 
-			if method == "DELETE" {
+			// The registry already knows which endpoints are destructive
+			// (every DELETE, plus overrides like employees terminate), and
+			// the docs promise the guard applies to those too — so consult it
+			// rather than re-deriving the policy from the method alone.
+			destructive := method == "DELETE"
+			if op, ok := registry.Match(method, path); ok && op.Destructive {
+				destructive = true
+			}
+			if destructive {
 				if err := app.confirmDestructive(method + " " + path); err != nil {
 					return err
 				}

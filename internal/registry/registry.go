@@ -6,6 +6,8 @@
 // `api ops`, and the golden snapshot — snake_case, stable for agents.
 package registry
 
+import "strings"
+
 // EnvelopeKind describes the documented response shape of an operation.
 // The runtime normalizer is shape-driven and does not depend on this value;
 // it exists for help text and docs (the spec is wrong about responses in
@@ -101,16 +103,6 @@ type Meta struct {
 	OpCount     int    `json:"op_count"`
 }
 
-// ByCommand returns the op mounted at the given curated command path, if any.
-func ByCommand(command string) (*Op, bool) {
-	for i := range Ops {
-		if Ops[i].Command == command {
-			return &Ops[i], true
-		}
-	}
-	return nil, false
-}
-
 // Find returns the op with the given method and path template, if any.
 func Find(method, path string) (*Op, bool) {
 	for i := range Ops {
@@ -119,4 +111,49 @@ func Find(method, path string) (*Op, bool) {
 		}
 	}
 	return nil, false
+}
+
+// Match resolves a concrete request path ("/employees/42/terminate", with or
+// without a query string) to the op whose template it fills. `api call` takes
+// real paths rather than templates, so an exact Find never matches there.
+//
+// The most specific template wins: /employees/terminated and
+// /employees/{employee_id} both accept "/employees/terminated", and picking by
+// table order would make the result depend on where the generator emitted them.
+func Match(method, path string) (*Op, bool) {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	got := strings.Split(strings.Trim(path, "/"), "/")
+
+	var best *Op
+	bestLiterals := -1
+	for i := range Ops {
+		if Ops[i].Method != method {
+			continue
+		}
+		want := strings.Split(strings.Trim(Ops[i].Path, "/"), "/")
+		if len(want) != len(got) {
+			continue
+		}
+		literals, matched := 0, true
+		for j := range want {
+			if strings.HasPrefix(want[j], "{") && strings.HasSuffix(want[j], "}") {
+				if got[j] == "" { // a placeholder cannot absorb an empty segment
+					matched = false
+					break
+				}
+				continue
+			}
+			if want[j] != got[j] {
+				matched = false
+				break
+			}
+			literals++
+		}
+		if matched && literals > bestLiterals {
+			best, bestLiterals = &Ops[i], literals
+		}
+	}
+	return best, best != nil
 }
