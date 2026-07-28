@@ -42,6 +42,37 @@ func TestJQRawStripsTerminalControlSequences(t *testing.T) {
 	}
 }
 
+// --raw is the text-extraction path: an agent reading a multi-line note field
+// must get it back the way jq -r would, whitespace included, while ESC, CR
+// and the C1 range still go.
+func TestJQRawPreservesNewlinesAndTabs(t *testing.T) {
+	var out bytes.Buffer
+	body := `[{"note":"line1\nline2\tend \u001b[2K\r\u009bx"}]`
+	if err := Render(&out, norm(body, nil), Options{JQ: ".data[0].note", Raw: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "line1\nline2\tend [2Kx\n"; got != want {
+		t.Errorf("--jq -r output = %q, want %q", got, want)
+	}
+}
+
+// A newline inside a cell must not break the row apart, and must not vanish
+// either — deleting it would merge the words on either side.
+func TestTableCellNewlineBecomesSpaceOnOneRow(t *testing.T) {
+	var out bytes.Buffer
+	body := `[{"id":1,"note":"line1\nline2"}]`
+	if err := Render(&out, norm(body, nil), Options{Format: "table"}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want a header and a single row, got %q", out.String())
+	}
+	if lines[1] != "1\tline1 line2" {
+		t.Errorf("row = %q, want the newline rendered as a space", lines[1])
+	}
+}
+
 // JSON output was already safe; make sure sanitizing table/raw did not change it.
 func TestJSONPreservesDataExactly(t *testing.T) {
 	var out bytes.Buffer

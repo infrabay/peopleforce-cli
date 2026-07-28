@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,9 +17,36 @@ import (
 	"github.com/3bagels/peopleforce-cli/internal/envelope"
 )
 
+// Formats lists the accepted --output values, in the order they are offered to
+// users. It is the one place the set is spelled out: the flag help, the
+// up-front validation and every "unknown format" message derive from it, so a
+// format cannot end up accepted by one and unknown to another.
+var Formats = []string{"json", "table", "ndjson"}
+
+// ValidFormat reports whether name is an accepted --output value. The empty
+// string is NOT accepted: Render treats an unset Format as the json default
+// for library callers, but a CLI user who typed `--output ""` made a mistake
+// and silently rendering json would hide it.
+func ValidFormat(name string) bool {
+	return slices.Contains(Formats, name)
+}
+
+// FormatList renders Formats as an English list ("a, b, or c") for help and
+// error text.
+func FormatList() string {
+	switch len(Formats) {
+	case 0, 1:
+		return strings.Join(Formats, "")
+	case 2:
+		return Formats[0] + " or " + Formats[1]
+	default:
+		return strings.Join(Formats[:len(Formats)-1], ", ") + ", or " + Formats[len(Formats)-1]
+	}
+}
+
 // Options come from global flags.
 type Options struct {
-	Format string    // json (default) | table | ndjson
+	Format string    // one of Formats; empty means the json default
 	JQ     string    // gojq expression applied to the normalized envelope
 	Raw    bool      // with JQ: print string results without JSON quotes (jq -r)
 	Fields []string  // project these fields from data items
@@ -55,7 +83,10 @@ func Render(w io.Writer, n envelope.Normalized, opts Options) error {
 	case "table":
 		return renderTable(w, n)
 	default:
-		return fmt.Errorf("unknown output format %q (want json, table, or ndjson)", opts.Format)
+		// Unreachable through the CLI: validateOutputOptions rejects the value
+		// before any request is sent. It still guards direct callers, and a
+		// format added to Formats but not to the switch above.
+		return fmt.Errorf("unknown output format %q (want %s)", opts.Format, FormatList())
 	}
 }
 
@@ -113,7 +144,7 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 		if s, isString := v.(string); raw && isString {
 			// --raw prints the string unquoted, so control bytes from the API
 			// would reach the terminal verbatim.
-			fmt.Fprintln(&buf, sanitizeText(s))
+			fmt.Fprintln(&buf, sanitizeRaw(s))
 			continue
 		}
 		line, err := gojq.Marshal(v)
@@ -126,17 +157,37 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 	return err
 }
 
-// sanitizeText strips terminal control characters from server-supplied text.
-// Table cells and --jq --raw print strings verbatim, and some of those
-// strings are attacker-influenced — a candidate's name arrives through a
-// public job application — so an embedded ESC sequence could erase lines,
-// hide a row, or rewrite the window title of whoever reads the output.
+// Table cells and --jq --raw print server-supplied strings verbatim, and some
+// of those strings are attacker-influenced — a candidate's name arrives
+// through a public job application — so an embedded ESC sequence could erase
+// lines, hide a row, or rewrite the window title of whoever reads the output.
 // JSON output is unaffected: encoding/json escapes control bytes already.
-func sanitizeText(s string) string {
-	if !strings.ContainsFunc(s, isTerminalControl) {
-		return s
-	}
+//
+// sanitizeRaw is the --jq --raw variant. Newline and tab are ordinary content
+// on that path (real jq -r prints them, and agents extract multi-line fields
+// through it), so only the escape-capable bytes are removed.
+func sanitizeRaw(s string) string {
 	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if isTerminalControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// sanitizeCell is the table variant: a record is one line and tab separates
+// the columns, so layout-breaking whitespace cannot survive verbatim. It
+// becomes a space rather than being deleted — deleting it would silently glue
+// the surrounding words together.
+func sanitizeCell(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\t', '\r':
+			return ' '
+		}
 		if isTerminalControl(r) {
 			return -1
 		}
@@ -233,7 +284,7 @@ func renderTable(w io.Writer, n envelope.Normalized) error {
 	// Column names are API-supplied too (custom fields carry user-set keys).
 	headers := make([]string, len(cols))
 	for i, c := range cols {
-		headers[i] = sanitizeText(c)
+		headers[i] = sanitizeCell(c)
 	}
 	if err := writeRow(headers); err != nil {
 		return err
@@ -281,13 +332,13 @@ func formatCell(v any) string {
 	case nil:
 		return ""
 	case string:
-		return sanitizeText(x)
+		return sanitizeCell(x)
 	case float64:
 		if x == float64(int64(x)) {
 			return fmt.Sprintf("%d", int64(x))
 		}
 		return fmt.Sprintf("%g", x)
 	default:
-		return sanitizeText(fmt.Sprintf("%v", x))
+		return sanitizeCell(fmt.Sprintf("%v", x))
 	}
 }
