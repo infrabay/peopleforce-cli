@@ -3147,16 +3147,14 @@
           "flag": "team-lead-id",
           "type": "integer",
           "required": true
-        },
-        {
-          "name": "user_ids[]",
-          "flag": "user-ids",
-          "type": "number",
-          "repeatable": true
         }
       ],
       "body_kind": "json",
-      "envelope": "none"
+      "envelope": "none",
+      "examples": [
+        "peopleforce teams create --name Platform --team-lead-id 8321",
+        "peopleforce teams members add 34016 --user-id 8321"
+      ]
     },
     {
       "command": "teams members add",

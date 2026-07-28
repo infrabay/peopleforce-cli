@@ -1609,10 +1609,10 @@ var Ops = []Op{
 			{Name: "name", Flag: "name", Type: "string", Required: true},
 			{Name: "description", Flag: "description", Type: "string"},
 			{Name: "team_lead_id", Flag: "team-lead-id", Type: "integer", Required: true},
-			{Name: "user_ids[]", Flag: "user-ids", Type: "number", Repeatable: true},
 		},
 		BodyKind: "json",
 		Envelope: "none",
+		Examples: []string{"peopleforce teams create --name Platform --team-lead-id 8321", "peopleforce teams members add 34016 --user-id 8321"},
 	},
 	{
 		Command:    "teams members add",

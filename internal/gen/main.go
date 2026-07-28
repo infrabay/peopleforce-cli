@@ -45,6 +45,10 @@ type fieldOverride struct {
 	Type          string `yaml:"type"`
 	Description   string `yaml:"description"`
 	FileToDataURI bool   `yaml:"file_to_data_uri"`
+	// Skip drops a field the spec declares but the backend ignores. Use it
+	// only with evidence from a live call: a flag that looks like it works
+	// and silently does nothing is worse than no flag at all.
+	Skip bool `yaml:"skip"`
 }
 
 // fixDescription repairs systematic upstream description bugs: the "Fitler"
@@ -280,10 +284,11 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 		op.Query = append(op.Query, q)
 	}
 
-	if err := compileBody(&op, specOp, ov); err != nil {
+	skipped, err := compileBody(&op, specOp, ov)
+	if err != nil {
 		return op, err
 	}
-	if err := checkFieldOverrides(&op, ov); err != nil {
+	if err := checkFieldOverrides(&op, ov, skipped); err != nil {
 		return op, err
 	}
 	if err := checkFlagCollisions(&op); err != nil {
@@ -298,7 +303,7 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 // were not, so a field renamed upstream silently dropped its override — and
 // losing file_to_data_uri makes the flag advertise "@path" while posting the
 // literal string.
-func checkFieldOverrides(op *registry.Op, ov opOverride) error {
+func checkFieldOverrides(op *registry.Op, ov opOverride, skippedBody []string) error {
 	unmatched := func(names map[string]bool, keys map[string]fieldOverride, kind string) error {
 		var unknown []string
 		for k := range keys {
@@ -324,6 +329,11 @@ func checkFieldOverrides(op *registry.Op, ov opOverride) error {
 	for _, f := range op.Body {
 		bodyNames[f.Name] = true
 	}
+	// A skipped field matched a real spec property, it just did not survive
+	// into the registry — it must not be reported as an unknown override key.
+	for _, n := range skippedBody {
+		bodyNames[n] = true
+	}
 	if err := unmatched(bodyNames, ov.Body, "body"); err != nil {
 		return err
 	}
@@ -342,15 +352,15 @@ func checkFieldOverrides(op *registry.Op, ov opOverride) error {
 	return nil
 }
 
-func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
+func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) (skipped []string, _ error) {
 	// 14 GET operations carry accidental copy-pasted request bodies (some
 	// with bogus $ref-with-sibling schemas). GET never takes a body here.
 	if op.Method == "GET" {
-		return nil
+		return nil, nil
 	}
 	rb := specOp.RequestBody
 	if rb == nil || rb.Content == nil {
-		return nil
+		return nil, nil
 	}
 	var mediaType string
 	var media *v3.MediaType
@@ -359,7 +369,7 @@ func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
 		break // the spec never declares more than one request content type
 	}
 	if media == nil {
-		return nil // 14 GETs carry an accidental empty requestBody {"content": {}}
+		return nil, nil // 14 GETs carry an accidental empty requestBody {"content": {}}
 	}
 
 	switch {
@@ -368,12 +378,12 @@ func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
 	case strings.HasPrefix(mediaType, "multipart/form-data"):
 		op.BodyKind = registry.BodyMultipart
 	default:
-		return fmt.Errorf("unsupported request content type %q", mediaType)
+		return nil, fmt.Errorf("unsupported request content type %q", mediaType)
 	}
 
 	schema := schemaOf(media.Schema)
 	if schema == nil || schema.Properties == nil {
-		return nil
+		return nil, nil
 	}
 	required := map[string]bool{}
 	for _, r := range schema.Required {
@@ -395,6 +405,10 @@ func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
 			Repeatable:  strings.HasSuffix(name, "[]"),
 		}
 		if fo, ok := ov.Body[name]; ok {
+			if fo.Skip {
+				skipped = append(skipped, name)
+				continue
+			}
 			if fo.Type != "" {
 				f.Type = registry.ParamType(fo.Type)
 			}
@@ -405,7 +419,7 @@ func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
 		}
 		op.Body = append(op.Body, f)
 	}
-	return nil
+	return skipped, nil
 }
 
 func schemaOf(sp *base.SchemaProxy) *base.Schema {

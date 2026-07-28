@@ -122,6 +122,19 @@ operations:
     command: teams list
   "POST /teams":
     command: teams create
+    # The spec declares user_ids[] on the create body, but the backend ignores
+    # members here under either spelling. Verified against the live API on
+    # 2026-07-28: POST /teams with "user_ids[]" returns 201 with team_members
+    # empty, and with "user_ids" it returns 201 echoing the members back while
+    # persisting none of them — a later GET /teams shows an empty team. Members
+    # are only ever added through POST /teams/{team_id}/team_members, which is
+    # curated as `teams members add`. A flag that looks like it works and
+    # silently drops people is worse than no flag, so it is dropped.
+    body:
+      "user_ids[]": { skip: true }
+    examples:
+      - peopleforce teams create --name Platform --team-lead-id 8321
+      - peopleforce teams members add 34016 --user-id 8321   # members are added separately
   "PUT /teams/{id}":
     command: teams update
   "DELETE /teams/{id}":

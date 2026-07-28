@@ -13,16 +13,27 @@ generate: ## Recompile the registry from the spec + overrides.yaml
 	go run ./internal/gen
 
 # The golden snapshot and registry.gen.go are written by the same run, so the
-# in-repo test comparing them cannot notice that both are stale. Only
-# regenerating and diffing against git catches a spec or overrides edit that
-# never reached the shipped binary.
+# in-repo test comparing them cannot notice that both are stale. Regenerating
+# and checking whether the output actually changed is what catches a spec or
+# overrides edit that never reached the shipped binary.
+#
+# Compares against the files on disk rather than against git, so it works with
+# uncommitted work in progress: it answers "do these artifacts match their
+# inputs", which is the property that matters, not "are they committed".
 check-generated: ## Fail if the registry is stale w.r.t. the spec + overrides
-	@go run ./internal/gen
-	@git diff --quiet -- internal/registry/registry.gen.go testdata/golden/commands.json || { \
-		echo "ERROR: generated files are out of date — run 'make generate' and commit the result."; \
-		git --no-pager diff --stat -- internal/registry/registry.gen.go testdata/golden/commands.json; \
-		exit 1; }
-	@echo "generated files are up to date"
+	@tmp=$$(mktemp -d); \
+	cp internal/registry/registry.gen.go $$tmp/registry.gen.go; \
+	cp testdata/golden/commands.json $$tmp/commands.json; \
+	go run ./internal/gen; \
+	if cmp -s $$tmp/registry.gen.go internal/registry/registry.gen.go && \
+	   cmp -s $$tmp/commands.json testdata/golden/commands.json; then \
+		rm -rf $$tmp; echo "generated files are up to date"; \
+	else \
+		rm -rf $$tmp; \
+		echo "ERROR: generated files were stale — they have just been regenerated."; \
+		echo "Review the diff and commit it, then re-run."; \
+		exit 1; \
+	fi
 
 test: vet check-generated
 	go test ./...

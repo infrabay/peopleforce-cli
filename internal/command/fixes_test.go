@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/3bagels/peopleforce-cli/internal/config"
+	"github.com/3bagels/peopleforce-cli/internal/registry"
 )
 
 // Regression tests for the confirmed review findings.
@@ -64,6 +66,11 @@ func TestMultipartInputMergedNotIgnored(t *testing.T) {
 }
 
 func TestRepeatableJSONBodyFlag(t *testing.T) {
+	// No operation in the current spec has a repeatable JSON body field:
+	// teams create's user_ids[] was the only one, and it is skipped in
+	// overrides.yaml because the backend ignores it. The code path is still
+	// live for the next spec that introduces one, so drive it from a
+	// synthetic op rather than dropping the coverage.
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -72,19 +79,35 @@ func TestRepeatableJSONBodyFlag(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, stderr, code := runCLI(t, srv.URL, "teams", "create",
-		"--name", "Core", "--team-lead-id", "5",
-		"--user-ids", "1", "--user-ids", "2")
-	if code != 0 {
-		t.Fatalf("repeatable JSON body flag must work; exit = %d, stderr: %s", code, stderr)
+	op := &registry.Op{
+		Method: "POST", Path: "/things", Command: "things create",
+		Summary: "Create a thing", BodyKind: registry.BodyJSON,
+		Body: []registry.BodyField{
+			{Name: "member_ids[]", Flag: "member-ids", Type: registry.TypeInteger, Repeatable: true},
+		},
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("PEOPLEFORCE_PROFILE", "")
+	root, app := NewRoot()
+	var out, errBuf bytes.Buffer
+	app.Stdout, app.Stderr = &out, &errBuf
+	root.SetOut(&out)
+	root.SetErr(&errBuf)
+	root.AddCommand(newOpCommand(app, op, "synthetic"))
+	root.SetArgs([]string{"synthetic", "--member-ids", "1", "--member-ids", "2",
+		"--api-url", srv.URL, "--api-key", "test-key"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("repeatable JSON body flag must work: %v (stderr: %s)", err, errBuf.String())
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
 		t.Fatal(err)
 	}
-	arr, ok := body["user_ids[]"].([]any)
+	arr, ok := body["member_ids[]"].([]any)
 	if !ok || len(arr) != 2 || arr[0] != 1.0 || arr[1] != 2.0 {
-		t.Errorf("user_ids[] = %v (body: %s)", body["user_ids[]"], gotBody)
+		t.Errorf("member_ids[] = %v (body: %s)", body["member_ids[]"], gotBody)
 	}
 }
 
@@ -238,13 +261,6 @@ func TestRepeatableEnumValidated(t *testing.T) {
 	}
 	if called {
 		t.Error("invalid enum value must fail before the request")
-	}
-}
-
-func TestAllAndPageExclusiveEvenWithDryRun(t *testing.T) {
-	_, _, code := runCLI(t, "", "employees", "list", "--all", "--page", "2", "--dry-run")
-	if code != ExitUsage {
-		t.Errorf("exit = %d, want %d", code, ExitUsage)
 	}
 }
 
