@@ -1,9 +1,12 @@
 package command
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -145,5 +148,50 @@ func TestAuthErrorsDistinguish401From403(t *testing.T) {
 		if strings.Contains(stderr, tt.avoid) {
 			t.Errorf("HTTP %d: stderr should not mention %q, got %s", tt.status, tt.avoid, stderr)
 		}
+	}
+}
+
+// --dry-run claims to print "the exact request that would be sent", but an
+// empty body map was previewed as "body": {} while the real call sends no
+// body and no Content-Type at all.
+func TestDryRunOmitsBodyWhenNoneWouldBeSent(t *testing.T) {
+	stdout, stderr, code := runCLI(t, "", "employees", "update", "1", "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr)
+	}
+	var preview map[string]any
+	if err := json.Unmarshal([]byte(stdout), &preview); err != nil {
+		t.Fatalf("dry-run is not JSON: %v (%s)", err, stdout)
+	}
+	if _, present := preview["body"]; present {
+		t.Errorf("no body is sent, so none should be previewed: %s", stdout)
+	}
+}
+
+// --dry-run is the documented pre-flight check for a mutation, so it must not
+// approve an upload whose file cannot be read.
+func TestDryRunRejectsMissingUploadFile(t *testing.T) {
+	_, stderr, code := runCLI(t, "", "employees", "documents", "upload", "42",
+		"--document", "@/nonexistent/contract.pdf", "--name", "C", "--document-folder-id", "3", "--dry-run")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "document") {
+		t.Errorf("error should name the field, got: %s", stderr)
+	}
+}
+
+func TestDryRunAcceptsReadableUploadFile(t *testing.T) {
+	doc := filepath.Join(t.TempDir(), "contract.pdf")
+	if err := os.WriteFile(doc, []byte("PDF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runCLI(t, "", "employees", "documents", "upload", "42",
+		"--document", "@"+doc, "--name", "C", "--document-folder-id", "3", "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "@"+doc) {
+		t.Errorf("preview should show the file reference, got: %s", stdout)
 	}
 }

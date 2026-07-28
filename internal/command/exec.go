@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -97,13 +98,31 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
 	all := false
+	startPage := 1
 	if op.Paginated {
 		all, _ = cmd.Flags().GetBool("all")
+		// --page alongside --all is the resume point, not a conflict: when a
+		// long --all run dies partway the operator needs a way to continue
+		// without refetching everything.
 		if all && cmd.Flags().Changed("page") {
-			return usageErr("--all and --page are mutually exclusive")
+			// Registered as Int64 by registerQueryFlags, so read it as one.
+			p, err := cmd.Flags().GetInt64("page")
+			if err != nil {
+				return usageErr("--page: %v", err)
+			}
+			if p < 1 {
+				return usageErr("--page must be 1 or greater, got %d", p)
+			}
+			startPage = int(p)
 		}
+	}
+	if all {
+		// runAllPages supplies its own page param each iteration. Leaving the
+		// operator's --page in the base set would put two page keys in the URL,
+		// and the backend reads the first — pinning every request to the start
+		// page and looping on it forever.
+		query = dropQueryKey(query, "page")
 	}
 
 	var bodyBytes []byte
@@ -137,7 +156,13 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if app.dryRun {
-			// Show field names without reading files.
+			// Don't read the files, but do confirm they exist and are
+			// readable: --dry-run is the documented pre-flight check for a
+			// mutation, and reporting a request that cannot actually be sent
+			// defeats it.
+			if err := checkUploadsReadable(fields); err != nil {
+				return err
+			}
 			return printDryRun(app, op.Method, path, query, dryRunMultipartBody(fields))
 		}
 		bodyBytes, contentType, err = httpx.EncodeMultipart(fields)
@@ -157,7 +182,9 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	}
 	if app.dryRun {
 		var pretty any
-		if jsonBody != nil {
+		// Mirror jsonBodyBytes: an empty map is sent as no body at all, so
+		// previewing "body": {} would not be the request that goes out.
+		if len(jsonBody) > 0 {
 			pretty = jsonBody
 		}
 		return printDryRun(app, op.Method, path, query, pretty)
@@ -170,7 +197,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 
 	if all {
 		maxPages, _ := cmd.Flags().GetInt("max-pages")
-		return runAllPages(app, client, op, path, query, bodyBytes, contentType, maxPages)
+		return runAllPages(app, client, op, path, query, bodyBytes, contentType, maxPages, startPage)
 	}
 
 	req := httpx.Request{Method: op.Method, Path: path, Query: query, Body: bodyBytes, ContentType: contentType}
@@ -185,17 +212,34 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 // single envelope. With pagination metadata it stops at metadata.pages;
 // without it (some endpoints omit it) it keeps paging until an empty page —
 // never silently returning just page 1 of a longer list.
-func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, baseQuery []httpx.QueryPair, body []byte, contentType string, maxPages int) error {
+func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, baseQuery []httpx.QueryPair, body []byte, contentType string, maxPages, startPage int) error {
 	var allItems []json.RawMessage
 	var lastMeta map[string]any
 	var firstPage []byte
-	// A page identical to page 1 is held here until the NEXT page proves it
-	// was a coincidence (legit data) rather than a backend that ignores the
-	// page param and replays page 1 forever. Two consecutive replays of
-	// page 1 confirm the latter; anything else flushes the held page.
+	// A page identical to the run's first page is held here until the NEXT
+	// page proves it was a coincidence (legit data) rather than a backend that
+	// ignores the page param and replays one page forever. Two consecutive
+	// replays confirm the latter; anything else flushes the held page.
 	var pendingDup []json.RawMessage
-	page := 1
+	page := startPage
+	pagesFetched := 0
 	warnedNoMeta := false
+
+	// A run that dies on page N throws away the N-1 pages already transferred,
+	// so say where it stopped: --page doubles as the resume point for --all.
+	resumeHint := func(err error) error {
+		var ee *ExitError
+		if !errors.As(err, &ee) || pagesFetched == 0 {
+			return err
+		}
+		resume := fmt.Sprintf("re-run with --all --page %d to resume", page)
+		if op.Command != "" {
+			resume = fmt.Sprintf("re-run with `peopleforce %s --all --page %d` to resume", op.Command, page)
+		}
+		ee.Message = fmt.Sprintf("%s (pages %d-%d fetched successfully, %d items; %s)",
+			ee.Message, startPage, page-1, len(allItems), resume)
+		return ee
+	}
 
 	for {
 		query := append([]httpx.QueryPair{}, baseQuery...)
@@ -203,10 +247,10 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		req := httpx.Request{Method: op.Method, Path: path, Query: query, Body: body, ContentType: contentType}
 		resp, err := client.Do(context.Background(), req)
 		if err != nil {
-			return wrapTransport(err)
+			return resumeHint(wrapTransport(err))
 		}
 		if resp.Status < 200 || resp.Status > 299 {
-			return classifyStatus(resp.Status, resp.Body)
+			return resumeHint(classifyStatus(resp.Status, resp.Body))
 		}
 		n := envelope.Normalize(resp.Body, resp.Status)
 
@@ -215,6 +259,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			// Not a list — --all degrades to a single fetch.
 			return renderNormalized(app, n)
 		}
+		pagesFetched++
 		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
 
 		current, pages, ok := n.Page()
@@ -226,11 +271,11 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		// Replay detection runs whether or not pagination metadata is present:
 		// a backend can report page/pages correctly and still ignore ?page=,
 		// in which case trusting metadata alone concatenates page 1 N times.
-		if page == 1 {
+		if page == startPage {
 			firstPage = append(firstPage[:0], n.Data...)
 		} else if len(items) > 0 && bytes.Equal(firstPage, n.Data) {
 			if pendingDup != nil {
-				fmt.Fprintln(app.Stderr, "warning: consecutive pages replay page 1 — the endpoint seems to ignore the page parameter; keeping page 1 only")
+				fmt.Fprintln(app.Stderr, "warning: consecutive pages replay the first page — the endpoint seems to ignore the page parameter; keeping that page only")
 				pendingDup = nil
 				lastMeta = n.Meta
 				break
@@ -241,14 +286,14 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			// duplicate data, and byte-identical pages are far more often a
 			// backend ignoring ?page= than genuinely repeated records — so drop
 			// it rather than silently double-count.
-			if page >= maxPages {
+			if pagesFetched >= maxPages {
 				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
-				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to page 1 and no further page was available to tell a replaying backend from real duplicate data; it was dropped — raise --max-pages to resolve")
+				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to the first and no further page was available to tell a replaying backend from real duplicate data; it was dropped — raise --max-pages to resolve")
 				pendingDup = nil
 				break
 			}
 			if ok && current >= pages {
-				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to page 1 and no further page was available to tell a replaying backend from real duplicate data; it was dropped")
+				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to the first and no further page was available to tell a replaying backend from real duplicate data; it was dropped")
 				pendingDup = nil
 				break
 			}
@@ -265,7 +310,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		if len(items) == 0 || (ok && current >= pages) {
 			break
 		}
-		if page >= maxPages {
+		if pagesFetched >= maxPages {
 			if ok {
 				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d (of %d total pages)\n", maxPages, pages)
 			} else {
@@ -359,4 +404,39 @@ func wrapTransport(err error) error {
 		return ee
 	}
 	return &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
+}
+
+// dropQueryKey removes every pair with the given key, preserving order.
+func dropQueryKey(pairs []httpx.QueryPair, key string) []httpx.QueryPair {
+	out := pairs[:0:0]
+	for _, p := range pairs {
+		if p.Key != key {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// checkUploadsReadable verifies every file part can actually be opened,
+// without reading its contents. Used by --dry-run so a missing or unreadable
+// upload path fails the preview instead of the real request.
+func checkUploadsReadable(fields []httpx.FieldValue) error {
+	for _, f := range fields {
+		if !f.IsFile {
+			continue
+		}
+		st, err := os.Stat(f.Value)
+		if err != nil {
+			return usageErr("%s: %v", f.Name, err)
+		}
+		if st.IsDir() {
+			return usageErr("%s: %s is a directory", f.Name, f.Value)
+		}
+		fh, err := os.Open(f.Value)
+		if err != nil {
+			return usageErr("%s: %v", f.Name, err)
+		}
+		fh.Close()
+	}
+	return nil
 }
