@@ -271,6 +271,16 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 			Description: fixDescription(name, strings.TrimSpace(p.Description)),
 		}
 		if fo, ok := ov.Query[name]; ok {
+			// fieldOverride is shared with the body: map, but these two keys are
+			// only read while compiling body fields. KnownFields validation
+			// accepts them here, so without this guard `skip: true` under query:
+			// keeps shipping the flag it was written to remove.
+			if fo.Skip {
+				return op, fmt.Errorf("query override %q sets skip, which is only honoured for body fields", name)
+			}
+			if fo.FileToDataURI {
+				return op, fmt.Errorf("query override %q sets file_to_data_uri, which is only honoured for body fields", name)
+			}
 			if fo.Type != "" {
 				q.Type = registry.ParamType(fo.Type)
 			}
@@ -282,6 +292,21 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 			op.Paginated = true
 		}
 		op.Query = append(op.Query, q)
+	}
+
+	// A few operations document a Pagination-shaped 200 response yet never
+	// declare ?page= — a spec omission, not a backend one: /audits provably
+	// serves 93 distinct pages. Synthesize the parameter rather than only
+	// setting the flag, because --all's resume hint tells the operator to
+	// re-run with --page, which cobra rejects unless the command registers it.
+	if responseRefsPagination(specOp) && !op.Paginated {
+		op.Paginated = true
+		op.Query = append(op.Query, registry.Param{
+			WireName:    "page",
+			Flag:        "page",
+			Type:        registry.TypeInteger,
+			Description: "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata.",
+		})
 	}
 
 	skipped, err := compileBody(&op, specOp, ov)
@@ -544,6 +569,45 @@ func detectEnvelope(specOp *v3.Operation) registry.EnvelopeKind {
 		return registry.EnvelopeNone
 	}
 	return registry.EnvelopeUnknown
+}
+
+// responseRefsPagination reports whether the 200 response body declares the
+// shared Pagination component ({page, pages, count, items}), which every
+// page-able collection endpoint returns under "metadata".
+func responseRefsPagination(specOp *v3.Operation) bool {
+	if specOp.Responses == nil || specOp.Responses.Codes == nil {
+		return false
+	}
+	resp, ok := specOp.Responses.Codes.Get("200")
+	if !ok || resp == nil || resp.Content == nil {
+		return false
+	}
+	for mt := resp.Content.First(); mt != nil; mt = mt.Next() {
+		schema := schemaOf(mt.Value().Schema)
+		if schema == nil || schema.Properties == nil {
+			continue
+		}
+		for prop := schema.Properties.First(); prop != nil; prop = prop.Next() {
+			if isPaginationSchema(prop.Value()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPaginationSchema(sp *base.SchemaProxy) bool {
+	if sp == nil {
+		return false
+	}
+	if sp.IsReference() {
+		return strings.HasSuffix(sp.GetReference(), "/Pagination")
+	}
+	// The spec writes the metadata property as a $ref with a sibling
+	// "type": "object", which some readers collapse into an inline copy of the
+	// component rather than keeping the reference.
+	s := sp.Schema()
+	return s != nil && s.Title == "Pagination"
 }
 
 // flagName converts a literal wire name to a CLI flag:

@@ -48,6 +48,35 @@ func TestRegistryCoversWholeSpec(t *testing.T) {
 	}
 }
 
+// Paginated gates --all, and the resume hint an interrupted --all prints tells
+// the operator to re-run with --page. Nothing registers that flag except the
+// query param, so a paginated op without one advertises a flag cobra rejects.
+func TestPaginatedOpsExposePageParam(t *testing.T) {
+	paginated := 0
+	for i := range registry.Ops {
+		op := &registry.Ops[i]
+		if !op.Paginated {
+			continue
+		}
+		paginated++
+		hasPage := false
+		for _, q := range op.Query {
+			if q.WireName == "page" {
+				hasPage = true
+				break
+			}
+		}
+		if !hasPage {
+			t.Errorf("%s %s: Paginated but no page query param", op.Method, op.Path)
+		}
+	}
+	// 47 operations declare ?page=; 7 more only document a Pagination-shaped
+	// response and get the param synthesized by the generator.
+	if paginated != 54 {
+		t.Errorf("paginated operations = %d, expected 54", paginated)
+	}
+}
+
 func TestGoldenSnapshotInSync(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/golden/commands.json")
 	if err != nil {

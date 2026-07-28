@@ -496,10 +496,17 @@
           "flag": "employee-field-internal-name",
           "type": "string",
           "description": "Internal name of the employee field"
+        },
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
         }
       ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "command": "employees salaries list",
@@ -2043,8 +2050,17 @@
         "table_name",
         "column_name"
       ],
+      "query": [
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
+        }
+      ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "POST",
@@ -2317,17 +2333,33 @@
           "type": "integer",
           "repeatable": true,
           "description": "An array of applicant IDs to filter movements by"
+        },
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
         }
       ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "GET",
       "path": "/recruitment/candidate_fields",
       "summary": "List candidate fields",
+      "query": [
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
+        }
+      ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "GET",
@@ -3065,8 +3097,17 @@
       "method": "GET",
       "path": "/recruitment/pipelines",
       "summary": "List vacancy pipelines",
+      "query": [
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
+        }
+      ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "GET",
@@ -4499,10 +4540,17 @@
           "flag": "created-at-lt",
           "type": "integer",
           "description": "Filter audit records less than this datetime Value should be a valid Unix timestamp."
+        },
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
         }
       ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "GET",
@@ -4751,8 +4799,17 @@
       "method": "GET",
       "path": "/compensation_types",
       "summary": "List compensation types",
+      "query": [
+        {
+          "wire_name": "page",
+          "flag": "page",
+          "type": "integer",
+          "description": "A cursor for pagination across multiple pages of results. Undeclared in the spec; the response carries pagination metadata."
+        }
+      ],
       "body_kind": "none",
-      "envelope": "list"
+      "envelope": "list",
+      "paginated": true
     },
     {
       "method": "POST",

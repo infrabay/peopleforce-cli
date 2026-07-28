@@ -88,9 +88,11 @@ type Op struct {
 	Body       []BodyField `json:"body,omitempty"`
 	BodyKind   BodyKind    `json:"body_kind"`
 
-	Envelope    EnvelopeKind `json:"envelope"`
-	Paginated   bool         `json:"paginated,omitempty"`   // has the page query param
-	Destructive bool         `json:"destructive,omitempty"` // requires --yes (DELETE, terminate, ...)
+	Envelope EnvelopeKind `json:"envelope"`
+	// Paginated means the operation declares a page query param or returns
+	// Pagination metadata; either way Query carries a "page" param.
+	Paginated   bool `json:"paginated,omitempty"`
+	Destructive bool `json:"destructive,omitempty"` // requires --yes (DELETE, terminate, ...)
 
 	Examples []string `json:"examples,omitempty"` // curated example invocations for --help
 }
