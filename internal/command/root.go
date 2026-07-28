@@ -4,6 +4,7 @@ package command
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -52,7 +53,8 @@ type App struct {
 // (the default; table mode switches to human sentences).
 func (a *App) JSONErrors() bool { return a.outFormat != "table" }
 
-// validateOutputOptions rejects bad --output/--jq values up front.
+// validateOutputOptions rejects bad global flag values up front, before any
+// request is issued.
 func (a *App) validateOutputOptions() error {
 	switch a.outFormat {
 	case "json", "table", "ndjson":
@@ -64,6 +66,15 @@ func (a *App) validateOutputOptions() error {
 			return usageErr("invalid --jq expression: %v", err)
 		}
 	}
+	// Both used to be coerced in silence: --timeout 0 (the natural way to ask
+	// for "no limit") became 30s, and a negative --max-retries became one
+	// attempt.
+	if a.timeout <= 0 {
+		return usageErr("--timeout must be positive, got %s", a.timeout)
+	}
+	if a.maxRetries < 0 {
+		return usageErr("--max-retries cannot be negative, got %d", a.maxRetries)
+	}
 	return nil
 }
 
@@ -74,6 +85,7 @@ func (a *App) outputOptions() output.Options {
 		Raw:    a.jqRaw,
 		Fields: a.fields,
 		Pretty: true,
+		Warn:   a.Stderr,
 	}
 }
 
@@ -101,6 +113,7 @@ func (a *App) client() (*httpx.Client, error) {
 		return nil, &ExitError{Code: ExitAuth, Type: "auth",
 			Message: "no API key configured: set " + config.EnvAPIKey + ", pass --api-key, or run `peopleforce auth login --api-key <key>`"}
 	}
+	a.warnInsecureURL(r.APIURL)
 	c := &httpx.Client{
 		BaseURL:    r.APIURL,
 		APIKey:     r.APIKey,
@@ -114,6 +127,20 @@ func (a *App) client() (*httpx.Client, error) {
 		}
 	}
 	return c, nil
+}
+
+// warnInsecureURL flags a plaintext API URL. A copy-pasted http:// base URL
+// ships the API key in the clear on every request; that is a legitimate setup
+// against a local proxy, so warn rather than refuse — but never in silence.
+func (a *App) warnInsecureURL(raw string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Scheme == "https" {
+		return
+	}
+	if host := u.Hostname(); host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return
+	}
+	fmt.Fprintf(a.Stderr, "warning: %s is not https — the API key is sent in cleartext on every request\n", raw)
 }
 
 // confirmDestructive enforces the guard on destructive operations: --yes,
@@ -226,9 +253,10 @@ var groupShort = map[string]string{
 	"policies":    "Leave policies",
 }
 
-// newGroup builds an intermediate command node. Bare invocation shows help;
-// an unrecognized subcommand is a usage error (exit 2), never a silent
-// help-dump with exit 0.
+// newGroup builds an intermediate command node. A group names no operation,
+// so invoking one bare is a usage error (exit 2) with help on stderr — never
+// a help-dump on stdout with exit 0, which would hand `peopleforce employees
+// | jq .data` unparseable text and a success code.
 func newGroup(name, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   name,
@@ -239,7 +267,9 @@ func newGroup(name, short string) *cobra.Command {
 				return usageErr("unknown command %q for %q — run `%s --help`",
 					args[0], cmd.CommandPath(), cmd.CommandPath())
 			}
-			return cmd.Help()
+			cmd.SetOut(cmd.ErrOrStderr())
+			_ = cmd.Help()
+			return usageErr("%q needs a subcommand — see the list above", cmd.CommandPath())
 		},
 	}
 }

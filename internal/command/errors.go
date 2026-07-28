@@ -2,6 +2,7 @@ package command
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ const (
 	ExitRateLimit  = 6 // 429 after retries exhausted
 	ExitServer     = 7 // 5xx
 	ExitNetwork    = 8 // DNS/TLS/timeout/connection failures
+	ExitOutput     = 9 // request succeeded; rendering the response failed
 )
 
 // ExitError carries the process exit code plus a structured, machine-readable
@@ -36,9 +38,17 @@ func (e *ExitError) Error() string { return e.Message }
 func classifyStatus(status int, body []byte) *ExitError {
 	e := &ExitError{Status: status}
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case status == http.StatusUnauthorized:
 		e.Code, e.Type = ExitAuth, "auth"
-		e.Message = fmt.Sprintf("authentication failed (HTTP %d): check your API key (`peopleforce auth status`)", status)
+		e.Message = "authentication failed (HTTP 401): the API key is missing or invalid (`peopleforce auth status`)"
+	case status == http.StatusForbidden:
+		// A 403 with a well-formed key is usually not the key at all: the
+		// public API is toggled off for it, or the caller's IP is outside the
+		// PeopleForce allowlist. Saying "check your API key" sends people
+		// hunting for the wrong problem.
+		e.Code, e.Type = ExitAuth, "auth"
+		e.Message = "access denied (HTTP 403): the key was recognized but the request was refused — " +
+			"check that API access is enabled for this key and that your IP is in the PeopleForce allowlist"
 	case status == http.StatusNotFound:
 		e.Code, e.Type = ExitNotFound, "not_found"
 		e.Message = fmt.Sprintf("resource not found (HTTP %d)", status)
@@ -55,7 +65,7 @@ func classifyStatus(status int, body []byte) *ExitError {
 		e.Code, e.Type = ExitValidation, "api"
 		e.Message = fmt.Sprintf("unexpected API response (HTTP %d)", status)
 	}
-	if json.Valid(body) && len(body) > 0 {
+	if json.Valid(body) { // json.Valid is already false for an empty body
 		e.Detail = json.RawMessage(body)
 	}
 	return e
@@ -68,8 +78,11 @@ func usageErr(format string, args ...any) *ExitError {
 // PrintError writes the error to stderr honoring the output mode: structured
 // JSON for agents, a plain sentence for humans.
 func PrintError(w io.Writer, err error, jsonMode bool) {
-	ee, ok := err.(*ExitError)
-	if !ok {
+	// errors.As, not a bare assertion: exit codes are the agent contract, and
+	// a single fmt.Errorf("%w") anywhere upstream would otherwise silently
+	// downgrade a documented 3/5/8 to 2.
+	var ee *ExitError
+	if !errors.As(err, &ee) {
 		ee = &ExitError{Code: ExitUsage, Type: "usage", Message: err.Error()}
 	}
 	if jsonMode {
@@ -86,7 +99,8 @@ func CodeFor(err error) int {
 	if err == nil {
 		return ExitOK
 	}
-	if ee, ok := err.(*ExitError); ok {
+	var ee *ExitError
+	if errors.As(err, &ee) {
 		return ee.Code
 	}
 	return ExitUsage

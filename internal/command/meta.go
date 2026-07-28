@@ -3,9 +3,11 @@ package command
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -115,9 +117,14 @@ probes the API with a cheap request. Exit code 0 when authenticated,
 				result["probe_status"] = resp.Status
 				result["authenticated"] = resp.Status >= 200 && resp.Status < 300
 				switch {
-				case resp.Status == 401 || resp.Status == 403:
+				case resp.Status == 401:
 					probeErr = &ExitError{Code: ExitAuth, Type: "auth", Status: resp.Status,
-						Message: fmt.Sprintf("API key rejected (HTTP %d), source: %s", resp.Status, r.APIKeySource)}
+						Message: fmt.Sprintf("API key missing or invalid (HTTP 401), source: %s", r.APIKeySource)}
+				case resp.Status == 403:
+					probeErr = &ExitError{Code: ExitAuth, Type: "auth", Status: resp.Status,
+						Message: fmt.Sprintf("API key recognized but access denied (HTTP 403), source: %s — "+
+							"check that API access is enabled for this key and that your IP is in the PeopleForce allowlist",
+							r.APIKeySource)}
 				case resp.Status < 200 || resp.Status > 299:
 					// Probe failed for a non-auth reason (5xx, network path
 					// issue) — exit non-zero so agents don't read "ok".
@@ -235,7 +242,21 @@ drive this CLI: auth, output contract, exit codes, and common recipes.`,
 				return err
 			}
 			dest := filepath.Join(base, "SKILL.md")
-			if err := os.WriteFile(dest, []byte(agentdocs.SkillMD), 0o644); err != nil {
+			// O_NOFOLLOW: the destination is a fixed relative path, and a
+			// repo can carry a symlink there. Following it would let a
+			// cloned repo redirect this write onto ~/.zshrc or a CI config.
+			f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+			if err != nil {
+				if errors.Is(err, syscall.ELOOP) {
+					return usageErr("%s is a symlink; refusing to write through it", dest)
+				}
+				return err
+			}
+			if _, err := f.WriteString(agentdocs.SkillMD); err != nil {
+				f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
 				return err
 			}
 			fmt.Fprintf(app.Stderr, "installed %s\n", dest)

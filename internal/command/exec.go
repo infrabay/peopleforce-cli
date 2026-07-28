@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -217,29 +218,42 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
 
 		current, pages, ok := n.Page()
-		if !ok {
-			if !warnedNoMeta {
-				fmt.Fprintln(app.Stderr, "note: response carries no pagination metadata; paging until an empty page")
-				warnedNoMeta = true
-			}
-			if page == 1 {
-				firstPage = append(firstPage[:0], n.Data...)
-			} else if len(items) > 0 && bytes.Equal(firstPage, n.Data) {
-				if pendingDup != nil {
-					fmt.Fprintln(app.Stderr, "warning: consecutive pages replay page 1 — the endpoint seems to ignore the page parameter; keeping page 1 only")
-					pendingDup = nil
-					lastMeta = n.Meta
-					break
-				}
-				pendingDup = items
+		if !ok && !warnedNoMeta {
+			fmt.Fprintln(app.Stderr, "note: response carries no pagination metadata; paging until an empty page")
+			warnedNoMeta = true
+		}
+
+		// Replay detection runs whether or not pagination metadata is present:
+		// a backend can report page/pages correctly and still ignore ?page=,
+		// in which case trusting metadata alone concatenates page 1 N times.
+		if page == 1 {
+			firstPage = append(firstPage[:0], n.Data...)
+		} else if len(items) > 0 && bytes.Equal(firstPage, n.Data) {
+			if pendingDup != nil {
+				fmt.Fprintln(app.Stderr, "warning: consecutive pages replay page 1 — the endpoint seems to ignore the page parameter; keeping page 1 only")
+				pendingDup = nil
 				lastMeta = n.Meta
-				if page >= maxPages {
-					fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
-					break
-				}
-				page++
-				continue
+				break
 			}
+			pendingDup = items
+			lastMeta = n.Meta
+			// Nothing further can settle whether this page is a replay or real
+			// duplicate data, and byte-identical pages are far more often a
+			// backend ignoring ?page= than genuinely repeated records — so drop
+			// it rather than silently double-count.
+			if page >= maxPages {
+				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
+				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to page 1 and no further page was available to tell a replaying backend from real duplicate data; it was dropped — raise --max-pages to resolve")
+				pendingDup = nil
+				break
+			}
+			if ok && current >= pages {
+				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to page 1 and no further page was available to tell a replaying backend from real duplicate data; it was dropped")
+				pendingDup = nil
+				break
+			}
+			page++
+			continue
 		}
 
 		if pendingDup != nil {
@@ -260,11 +274,6 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			break
 		}
 		page++
-	}
-	if pendingDup != nil {
-		// Loop ended (empty page / --max-pages) before the hold could be
-		// confirmed either way — it was real data, keep it.
-		allItems = append(allItems, pendingDup...)
 	}
 
 	if allItems == nil {
@@ -293,7 +302,11 @@ func renderResponse(app *App, resp *httpx.Response) error {
 
 func renderNormalized(app *App, n envelope.Normalized) error {
 	if err := output.Render(app.Stdout, n, app.outputOptions()); err != nil {
-		return usageErr("%v", err)
+		// Not ExitUsage: the request was issued and may have mutated state,
+		// so reporting "bad flags/args" would tell an agent it is safe to
+		// re-run — and re-running duplicates the created resource.
+		return &ExitError{Code: ExitOutput, Type: "output",
+			Message: fmt.Sprintf("the request succeeded but the response could not be rendered: %v", err)}
 	}
 	if n.HasBulkErrors() {
 		return &ExitError{Code: ExitValidation, Type: "validation",
@@ -340,10 +353,9 @@ func dryRunMultipartBody(fields []httpx.FieldValue) map[string]any {
 }
 
 func wrapTransport(err error) error {
-	if _, ok := err.(*httpx.TransportError); ok {
-		return &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
-	}
-	if ee, ok := err.(*ExitError); ok {
+	// errors.As so a wrapped error keeps its documented exit code.
+	var ee *ExitError
+	if errors.As(err, &ee) {
 		return ee
 	}
 	return &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
