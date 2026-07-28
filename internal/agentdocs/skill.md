@@ -17,13 +17,21 @@ Verify before doing work:
 peopleforce auth status   # exit 0 = authenticated, 3 = missing/rejected key
 ```
 
+401 and 403 mean different things and are worth reading carefully: 401 is a
+missing or invalid key, while 403 means the key was recognized but the request
+was refused — usually because API access is not enabled for that key, or the
+caller's IP is outside the PeopleForce allowlist. A 403 on every endpoint with
+a well-formed key is almost never the key itself, so do not send the user
+hunting for a new token before checking the allowlist.
+
 ## Output contract
 
 - stdout: data only. JSON by default, always shaped `{"data": ..., "meta": {...}}`.
   Lists put pagination in `meta` (`page`, `pages`, `count`, `items`).
 - stderr: diagnostics; errors are structured `{"error": {"type", "status", "message", "detail"}}`.
 - Exit codes: `0` ok · `2` usage · `3` auth · `4` not found · `5` validation ·
-  `6` rate-limited · `7` server error · `8` network.
+  `6` rate-limited · `7` server error · `8` network · `9` the response could
+  not be rendered (the request already succeeded — do not blindly retry).
 
 Trim tokens with the built-in jq (no external jq needed) or field projection:
 
@@ -33,7 +41,14 @@ peopleforce employees list --fields id,full_name,email
 peopleforce employees get 123 --jq .data.email --raw   # -r: strings without quotes
 ```
 
-When both are given, `--jq` wins and `--fields` is ignored.
+When both are given, `--jq` wins and `--fields` is ignored. A `--fields`
+name that matches nothing in the response is reported on stderr — the data
+still renders, so check stderr rather than assuming empty objects mean empty
+records. Note `--jq` produces JSON regardless of `--output`.
+
+Other globals: `--timeout` (default 30s), `--verbose` (log requests and
+retries to stderr). `--output ndjson` omits `meta`; `--all` replaces
+`meta.page` with `meta.fetched`.
 
 ## Discovering commands
 
@@ -64,6 +79,12 @@ peopleforce employees list --hired-on-gte 2026-01-01 --all --jq '.data[] | {id, 
 # One employee with leave balances
 peopleforce employees get 123
 peopleforce employees leave-balances 123
+
+# Team membership — read it from the LIST; there is no GET /teams/{id} (404),
+# and an employee record has no team field (only department/division/position).
+# team_lead sits OUTSIDE team_members, so include it or you lose one person.
+peopleforce teams list --jq '.data[] | select(.name == "Platform") |
+  [.team_lead.email] + [.team_members[].user.email] | .[]' --raw
 
 # Pending leave requests / create a leave request
 peopleforce leave requests pending

@@ -42,6 +42,12 @@ NDJSON, one line per record, in input order:
 "data" carries the API's updated record when it returns one, so results can
 be verified without follow-up GETs. --output/--jq/--fields do not apply to
 this report. Exit code 0 when every record succeeded, 5 when any failed.
+
+A network failure aborts the run: the report stops at the last record that
+got a response and the exit code is 8, not 5. Records already on stdout were
+applied; anything after the last reported line was not attempted, so re-run
+with the remainder rather than the whole file.
+
 --dry-run previews the whole batch without sending anything.`,
 		Example: `  peopleforce employees bulk-update --input @updates.jsonl
   peopleforce employees bulk-update --input @updates.jsonl --dry-run

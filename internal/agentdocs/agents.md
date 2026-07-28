@@ -4,9 +4,12 @@ This environment has `peopleforce` — a CLI for the PeopleForce HR API
 (employees, leave, tasks, teams, org structure, recruitment).
 
 - Auth: `PEOPLEFORCE_API_KEY` env var; check with `peopleforce auth status`.
+  401 = key missing/invalid; 403 = key recognized but refused, usually an IP
+  outside the PeopleForce allowlist rather than a bad key.
 - Output: JSON on stdout, always `{"data": ..., "meta": {...}}`; errors as
   JSON on stderr. Exit codes: 0 ok, 2 usage, 3 auth, 4 not found,
-  5 validation, 6 rate-limit, 7 server, 8 network.
+  5 validation, 6 rate-limit, 7 server, 8 network, 9 render failure
+  (the request already went through — do not blindly retry).
 - Discover: `peopleforce commands` (full tree, one call),
   `peopleforce api ops`, `peopleforce api describe GET /employees`.
 - Any endpoint without a curated command: `peopleforce api call GET '/path?query'`.

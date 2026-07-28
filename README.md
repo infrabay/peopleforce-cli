@@ -12,7 +12,7 @@ peopleforce api call GET '/recruitment/vacancies?page=1'
 
 ## Install
 
-Requires Go 1.24+.
+Requires Go 1.26+.
 
 ```bash
 make build          # ./peopleforce
@@ -41,7 +41,9 @@ base URL.
 - **stderr**: diagnostics only; errors are structured
   `{"error": {"type", "status", "message", "detail"}}`.
 - **Exit codes**: `0` ok · `2` usage · `3` auth · `4` not found ·
-  `5` validation · `6` rate-limited · `7` server error · `8` network.
+  `5` validation · `6` rate-limited · `7` server error · `8` network ·
+  `9` the request succeeded but its response could not be rendered (never
+  safe to blindly re-run: a mutation already happened).
 - Built-in filtering (no external jq): `--jq '.data[] | {id}'`, `--fields id,email`,
   `--raw`/`-r` for unquoted string output (like `jq -r`); with both, `--jq` wins.
 - Other formats: `--output table` (humans), `--output ndjson` (streaming).
@@ -49,7 +51,14 @@ base URL.
   `employees terminate`) require `--yes`; every mutation supports `--dry-run`.
 - Lists: `--page N` (page size is fixed server-side) or `--all`
   (auto-paginates, capped by `--max-pages`, default 20; empty results are `[]`,
-  never `null`).
+  never `null`). `--all` reports per-page progress on stderr, replaces
+  `meta.page` with `meta.fetched` (the total it collected), and drops a page
+  that merely replays page 1 — a backend ignoring `?page=` never inflates the
+  result silently.
+- `--output ndjson` streams one data item per line and omits `meta` entirely;
+  use the default `--output json` when you need pagination info.
+- Other globals: `--timeout` (default 30s) and `--verbose` (log requests and
+  retries to stderr).
 - 429s are retried automatically honoring `Retry-After` in both RFC forms
   (`--max-retries`, default 3). Transient 5xx responses are retried only for
   idempotent methods — a POST is never re-sent (duplicate-write risk).
@@ -73,6 +82,11 @@ uploads (`recruitment candidates create`, `recruitment candidates documents
 upload` — `api call` bodies are JSON-only). Everything else is reachable via
 `api call`; illegal URL bytes in its path (spaces, non-ASCII) are
 percent-encoded automatically while bracket keys pass through verbatim.
+
+Team membership is read from `teams list`: the upstream API has no
+`GET /teams/{id}` and an employee record carries no team field, so the list
+response is the only source. `team_lead` sits outside `team_members`, so
+collect both to get everyone.
 
 ### Agent onboarding
 
