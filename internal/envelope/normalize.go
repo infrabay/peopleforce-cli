@@ -32,7 +32,10 @@ var nullJSON = json.RawMessage("null")
 //  6. empty body / 204                                   — data: null
 //
 // Extra top-level keys next to data/metadata (e.g. the stray "page" on
-// /time/timesheets) are preserved under meta.
+// /time/timesheets) are preserved under meta, but never overwrite a key
+// already set from metadata or from the HTTP status: when /time/timesheets
+// disagrees with its own metadata.page, pagination must follow metadata or
+// --all stops early.
 func Normalize(body []byte, status int) Normalized {
 	meta := map[string]any{"status": status}
 
@@ -51,13 +54,18 @@ func Normalize(body []byte, status int) Normalized {
 		return Normalized{Data: nullJSON, Meta: meta}
 	}
 
-	// Shape 5: bulk {records, errors}.
-	if records, ok := top["records"]; ok {
+	// Shape 5: bulk {records[, errors]}. The errors key is absent when every
+	// record succeeded, and requiring it made .data flip between an array and
+	// the whole object depending on whether anything failed.
+	//
+	// Only an object that is *nothing but* records (+errors) is unwrapped: a
+	// real resource that happens to carry a records field keeps its shape.
+	if records, ok := top["records"]; ok && isBulkEnvelope(top) {
 		if errs, ok := top["errors"]; ok {
 			meta["errors"] = json.RawMessage(errs)
-			addExtraKeys(meta, top, "records", "errors")
-			return Normalized{Data: normalizeNull(records, true), Meta: meta}
 		}
+		addExtraKeys(meta, top, "records", "errors")
+		return Normalized{Data: normalizeNull(records, true), Meta: meta}
 	}
 
 	// Shapes 1-3: enveloped.
@@ -78,6 +86,18 @@ func Normalize(body []byte, status int) Normalized {
 
 	// Shape 4: bare object.
 	return Normalized{Data: json.RawMessage(trimmed), Meta: meta}
+}
+
+// isBulkEnvelope reports whether the body is a bulk wrapper rather than a
+// resource that merely has a records field: records must be an array and no
+// key other than records/errors may be present.
+func isBulkEnvelope(top map[string]json.RawMessage) bool {
+	for k := range top {
+		if k != "records" && k != "errors" {
+			return false
+		}
+	}
+	return bytes.HasPrefix(bytes.TrimSpace(top["records"]), []byte("["))
 }
 
 // HasBulkErrors reports whether a normalized bulk response carried a
@@ -111,6 +131,9 @@ func addExtraKeys(meta map[string]any, top map[string]json.RawMessage, consumed 
 	}
 	for k, v := range top {
 		if skip[k] {
+			continue
+		}
+		if _, taken := meta[k]; taken {
 			continue
 		}
 		var val any

@@ -69,6 +69,30 @@ func TestNormalizeAllUpstreamShapes(t *testing.T) {
 			wantData: `[{"id":1}]`,
 			wantMeta: map[string]any{"status": 200, "page": 2.0, "pages": 2.0, "count": 1.0, "items": 25.0},
 		},
+		{
+			// The stray key must not win: --all reads meta.page to decide when
+			// to stop, so letting a disagreeing top-level page through cut the
+			// list short at page 1 of 3.
+			name:     "stray top-level page disagreeing with metadata loses",
+			body:     `{"data":[{"id":1}],"metadata":{"page":1,"pages":3,"count":3,"items":1},"page":3}`,
+			status:   200,
+			wantData: `[{"id":1}]`,
+			wantMeta: map[string]any{"status": 200, "page": 1.0, "pages": 3.0},
+		},
+		{
+			name:     "stray top-level status does not shadow the HTTP status",
+			body:     `{"data":[{"id":1}],"metadata":{"page":1,"pages":1},"status":"processing"}`,
+			status:   200,
+			wantData: `[{"id":1}]`,
+			wantMeta: map[string]any{"status": 200},
+		},
+		{
+			name:     "unrelated stray keys are still preserved",
+			body:     `{"data":[{"id":1}],"metadata":{"page":1,"pages":1},"warning":"deprecated"}`,
+			status:   200,
+			wantData: `[{"id":1}]`,
+			wantMeta: map[string]any{"status": 200, "warning": "deprecated"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,4 +176,25 @@ func compactJSON(t *testing.T, raw json.RawMessage) string {
 	}
 	out, _ := json.Marshal(v)
 	return string(out)
+}
+
+// The errors key is absent when every record succeeded, so requiring it made
+// .data flip between an array and the whole object depending on failures.
+func TestNormalizeBulkRecordsWithoutErrors(t *testing.T) {
+	n := Normalize([]byte(`{"records":[{"id":1},{"id":2}]}`), 200)
+	if got := compactJSON(t, n.Data); got != `[{"id":1},{"id":2}]` {
+		t.Errorf("data = %s, want the records array", got)
+	}
+	if n.HasBulkErrors() {
+		t.Error("no errors key means no bulk errors")
+	}
+}
+
+// A resource that merely carries a records field must keep its shape.
+func TestNormalizeResourceWithRecordsFieldIsNotUnwrapped(t *testing.T) {
+	body := `{"id":7,"name":"Payroll run","records":[{"id":1}]}`
+	n := Normalize([]byte(body), 200)
+	if got := compactJSON(t, n.Data); got != body {
+		t.Errorf("data = %s, want the whole object %s", got, body)
+	}
 }
