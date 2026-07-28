@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,11 +15,13 @@ const (
 	EnvAPIKey  = "PEOPLEFORCE_API_KEY"
 	EnvAPIURL  = "PEOPLEFORCE_API_URL"
 	EnvProfile = "PEOPLEFORCE_PROFILE"
+
+	envXDGConfigHome = "XDG_CONFIG_HOME"
 )
 
 // Profile is one named credential set in the config file.
 type Profile struct {
-	APIKey string `toml:"api_key"`
+	APIKey string `toml:"api_key,omitempty"`
 	APIURL string `toml:"api_url,omitempty"`
 }
 
@@ -35,11 +38,20 @@ type Resolved struct {
 	APIURL       string
 	APIURLSource string // "flag" | "env" | "config" | "default"
 	Profile      string
+
+	// Warning is set when resolution succeeded but something looks wrong —
+	// currently only a named profile that does not exist while the key came
+	// from a higher-precedence source. The caller surfaces it on stderr.
+	Warning string
 }
 
 // Path returns the config file location, honoring XDG_CONFIG_HOME.
 func Path() (string, error) {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	// The XDG spec requires absolute paths and mandates ignoring relative
+	// ones. Honoring a relative value would resolve against the current
+	// directory, so `auth login` inside a repo checkout would write the API
+	// key into the working tree, one `git add .` away from being published.
+	if xdg := os.Getenv(envXDGConfigHome); filepath.IsAbs(xdg) {
 		return filepath.Join(xdg, "peopleforce", "config.toml"), nil
 	}
 	home, err := os.UserHomeDir()
@@ -47,6 +59,37 @@ func Path() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "peopleforce", "config.toml"), nil
+}
+
+// nonDirAncestor returns the first existing element at or above dir that is
+// not a directory, or "" when the path is clear.
+func nonDirAncestor(dir string) string {
+	for {
+		if fi, err := os.Stat(dir); err == nil {
+			if fi.IsDir() {
+				return ""
+			}
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// explainPathError names the file blocking the config directory. os.IsNotExist
+// matches only ENOENT, so a regular file where the directory belongs surfaces
+// as a bare "not a directory" and kills every command — including ones that
+// have a perfectly good key in the environment and never needed the file.
+func explainPathError(path string, err error) error {
+	blocker := nonDirAncestor(filepath.Dir(path))
+	if blocker == "" {
+		return err
+	}
+	return fmt.Errorf("cannot use config file %s: %s is a file, not a directory — remove it or point %s at a different directory",
+		path, blocker, envXDGConfigHome)
 }
 
 // Load reads the config file; a missing file yields an empty config.
@@ -61,7 +104,7 @@ func Load() (File, error) {
 		if os.IsNotExist(err) {
 			return f, nil
 		}
-		return f, err
+		return f, explainPathError(path, err)
 	}
 	if err := toml.Unmarshal(data, &f); err != nil {
 		return f, fmt.Errorf("parsing %s: %w", path, err)
@@ -76,7 +119,7 @@ func Save(f File) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return explainPathError(path, err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "config-*.toml")
 	if err != nil {
@@ -104,19 +147,28 @@ func Resolve(flagKey, flagURL, flagProfile string) (Resolved, error) {
 		APIURLSource: "default",
 	}
 
-	r.Profile = "default"
+	const defaultProfile = "default"
+	r.Profile = defaultProfile
+	named := ""
 	if p := os.Getenv(EnvProfile); p != "" {
-		r.Profile = p
+		r.Profile, named = p, p
 	}
 	if flagProfile != "" {
-		r.Profile = flagProfile
+		r.Profile, named = flagProfile, flagProfile
 	}
+	// Naming "default" explicitly asks for the profile that is already implied,
+	// so it must behave exactly like not naming one: having no config file is
+	// the normal case for env-var users, and reporting a missing "default"
+	// would replace the accurate "no API key configured" (exit 3) with a
+	// misleading profile error (exit 2).
+	explicit := named != "" && named != defaultProfile
 
 	cfg, err := Load()
 	if err != nil {
 		return r, err
 	}
-	if prof, ok := cfg.Profiles[r.Profile]; ok {
+	prof, ok := cfg.Profiles[r.Profile]
+	if ok {
 		if prof.APIKey != "" {
 			r.APIKey = prof.APIKey
 			r.APIKeySource = "config"
@@ -143,6 +195,23 @@ func Resolve(flagKey, flagURL, flagProfile string) (Resolved, error) {
 	if flagURL != "" {
 		r.APIURL = flagURL
 		r.APIURLSource = "flag"
+	}
+
+	// A named profile that does not exist is reported only after the higher
+	// precedence sources have had their say. Failing earlier would let a
+	// missing profile veto a key given by --api-key or the environment, which
+	// contradicts the documented flag > env > config order and breaks anyone
+	// who exports PEOPLEFORCE_PROFILE while authenticating purely by env var.
+	// It still must not pass in silence: a typo'd profile name would otherwise
+	// run the command against whatever tenant the environment happens to hold.
+	if !ok && explicit {
+		path, _ := Path() // Load succeeded, so Path cannot fail here
+		detail := fmt.Sprintf("profile %q not found in %s (create it with `peopleforce auth login --profile %s --api-key <key>`)",
+			r.Profile, path, r.Profile)
+		if r.APIKeySource == "none" {
+			return r, errors.New(detail)
+		}
+		r.Warning = fmt.Sprintf("%s; continuing with the %s API key", detail, r.APIKeySource)
 	}
 	return r, nil
 }
