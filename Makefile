@@ -4,7 +4,7 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 LDFLAGS   = -X github.com/3bagels/peopleforce-cli/internal/command.Version=$(VERSION) \
             -X github.com/3bagels/peopleforce-cli/internal/command.Commit=$(COMMIT)
 
-.PHONY: build generate test vet install update-spec clean
+.PHONY: build generate check-generated test vet install update-spec clean
 
 build: ## Build ./peopleforce
 	go build -ldflags "$(LDFLAGS)" -o peopleforce ./cmd/peopleforce
@@ -12,7 +12,19 @@ build: ## Build ./peopleforce
 generate: ## Recompile the registry from the spec + overrides.yaml
 	go run ./internal/gen
 
-test: vet
+# The golden snapshot and registry.gen.go are written by the same run, so the
+# in-repo test comparing them cannot notice that both are stale. Only
+# regenerating and diffing against git catches a spec or overrides edit that
+# never reached the shipped binary.
+check-generated: ## Fail if the registry is stale w.r.t. the spec + overrides
+	@go run ./internal/gen
+	@git diff --quiet -- internal/registry/registry.gen.go testdata/golden/commands.json || { \
+		echo "ERROR: generated files are out of date — run 'make generate' and commit the result."; \
+		git --no-pager diff --stat -- internal/registry/registry.gen.go testdata/golden/commands.json; \
+		exit 1; }
+	@echo "generated files are up to date"
+
+test: vet check-generated
 	go test ./...
 
 vet:

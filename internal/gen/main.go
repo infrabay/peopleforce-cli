@@ -80,7 +80,12 @@ func main() {
 		log.Fatalf("reading overrides: %v", err)
 	}
 	var overrides overridesFile
-	if err := yaml.Unmarshal(ovBytes, &overrides); err != nil {
+	// KnownFields makes a misspelled key ("destructve", "file_to_data_url") a
+	// build failure instead of a silent no-op that ships a binary missing the
+	// --yes guard or the data-URI encoding.
+	dec := yaml.NewDecoder(bytes.NewReader(ovBytes))
+	dec.KnownFields(true)
+	if err := dec.Decode(&overrides); err != nil {
 		log.Fatalf("parsing overrides.yaml: %v", err)
 	}
 
@@ -181,7 +186,9 @@ func compile(model *v3.Document, overrides overridesFile) (registry.Meta, []regi
 			strings.Join(unknown, "\n  "))
 	}
 
-	// Curated command paths must be unique.
+	// Curated command paths must be unique, must not shadow a built-in, and
+	// must not be a strict prefix of another (a leaf and a group cannot share
+	// a name — the second registration silently wins).
 	seen := map[string]string{}
 	for _, op := range ops {
 		if op.Command == "" {
@@ -191,7 +198,18 @@ func compile(model *v3.Document, overrides overridesFile) (registry.Meta, []regi
 		if prev, dup := seen[op.Command]; dup {
 			return meta, nil, fmt.Errorf("command %q mapped to both %s and %s", op.Command, prev, key)
 		}
+		if err := checkReservedCommand(op.Command); err != nil {
+			return meta, nil, fmt.Errorf("%s: %w", key, err)
+		}
 		seen[op.Command] = key
+	}
+	for cmd := range seen {
+		for other := range seen {
+			if cmd != other && strings.HasPrefix(other, cmd+" ") {
+				return meta, nil, fmt.Errorf("command %q is both a leaf (%s) and the prefix of %q; "+
+					"rename one in overrides.yaml", cmd, seen[cmd], other)
+			}
+		}
 	}
 
 	meta.OpCount = len(ops)
@@ -265,10 +283,63 @@ func compileOp(method, path string, item *v3.PathItem, specOp *v3.Operation, ov 
 	if err := compileBody(&op, specOp, ov); err != nil {
 		return op, err
 	}
+	if err := checkFieldOverrides(&op, ov); err != nil {
+		return op, err
+	}
 	if err := checkFlagCollisions(&op); err != nil {
 		return op, err
 	}
 	return op, nil
+}
+
+// checkFieldOverrides rejects query:/body: keys that match no compiled
+// parameter, and file-typed fields in a JSON body that lack the data-URI
+// encoding. Operation keys are already validated in compile(); field keys
+// were not, so a field renamed upstream silently dropped its override — and
+// losing file_to_data_uri makes the flag advertise "@path" while posting the
+// literal string.
+func checkFieldOverrides(op *registry.Op, ov opOverride) error {
+	unmatched := func(names map[string]bool, keys map[string]fieldOverride, kind string) error {
+		var unknown []string
+		for k := range keys {
+			if !names[k] {
+				unknown = append(unknown, k)
+			}
+		}
+		if len(unknown) == 0 {
+			return nil
+		}
+		sort.Strings(unknown)
+		return fmt.Errorf("%s override(s) match no %s field of this operation: %s",
+			kind, kind, strings.Join(unknown, ", "))
+	}
+	queryNames := map[string]bool{}
+	for _, p := range op.Query {
+		queryNames[p.WireName] = true
+	}
+	if err := unmatched(queryNames, ov.Query, "query"); err != nil {
+		return err
+	}
+	bodyNames := map[string]bool{}
+	for _, f := range op.Body {
+		bodyNames[f.Name] = true
+	}
+	if err := unmatched(bodyNames, ov.Body, "body"); err != nil {
+		return err
+	}
+
+	// Only curated operations register body flags; uncurated ones are reached
+	// through `api call`, which takes raw JSON and never expands @path.
+	if op.Command == "" || op.BodyKind != registry.BodyJSON {
+		return nil
+	}
+	for _, f := range op.Body {
+		if f.Type == registry.TypeFile && !f.FileToDataURI {
+			return fmt.Errorf("body field %q is file-typed inside a JSON body: set file_to_data_uri: true "+
+				"under body.%s, or the --%s flag will send the literal @path string", f.Name, f.Name, f.Flag)
+		}
+	}
+	return nil
 }
 
 func compileBody(op *registry.Op, specOp *v3.Operation, ov opOverride) error {
@@ -468,6 +539,34 @@ func flagName(wire string) string {
 	s = strings.NewReplacer("[", "-", "]", "", "_", "-", ".", "-").Replace(s)
 	s = strings.Trim(strings.ToLower(s), "-")
 	return s
+}
+
+// reservedCommands are command paths the runtime mounts itself (see
+// NewRoot in internal/command). A curated command that lands on one of these
+// silently shadows it — `api ops` would issue an HTTP request instead of
+// dumping the operation table — so the generator refuses. Top-level names are
+// reserved wholesale: everything under them belongs to the built-in tree.
+var reservedCommandRoots = map[string]bool{
+	"api": true, "auth": true, "config": true, "skill": true,
+	"commands": true, "version": true, "agents-md": true,
+	"help": true, "completion": true,
+}
+
+// reservedCommandPaths are individual built-ins mounted inside a group that
+// curated commands otherwise share.
+var reservedCommandPaths = map[string]bool{
+	"employees bulk-update": true,
+}
+
+func checkReservedCommand(command string) error {
+	if reservedCommandPaths[command] {
+		return fmt.Errorf("command %q is mounted by the CLI itself; rename it in overrides.yaml", command)
+	}
+	root, _, _ := strings.Cut(command, " ")
+	if reservedCommandRoots[root] {
+		return fmt.Errorf("command %q lives under the built-in %q tree; rename it in overrides.yaml", command, root)
+	}
+	return nil
 }
 
 // reservedFlags are global/persistent flag names the builder claims.
