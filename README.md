@@ -54,7 +54,9 @@ base URL.
   never `null`). `--all` reports per-page progress on stderr, replaces
   `meta.page` with `meta.fetched` (the total it collected), and drops a page
   that merely replays page 1 — a backend ignoring `?page=` never inflates the
-  result silently.
+  result silently. If an `--all` run fails partway it reports how far it got
+  and the exact command to resume: `--page N` alongside `--all` is the start
+  page, and `--max-pages` caps how many pages that run fetches.
 - `--output ndjson` streams one data item per line and omits `meta` entirely;
   use the default `--output json` when you need pagination info.
 - Other globals: `--timeout` (default 30s) and `--verbose` (log requests and

@@ -134,6 +134,11 @@ Note: `employees list` returns a slim record without `fields`; use
 
 - Lists take `--page N` (page size is fixed server-side). `--all` follows
   every page (capped by `--max-pages`, default 20); empty results are `[]`.
+- If an `--all` run fails partway it exits non-zero and names the resume
+  point; re-run with `--all --page N` to continue instead of starting over.
+  `--max-pages` limits pages fetched by that run, not the page number.
+- Team membership comes only from `teams list` (no GET /teams/{id}), and
+  `teams create` cannot set members — use `teams members add`.
 - 429 rate limits are retried automatically (honoring Retry-After) up to
   `--max-retries` (default 3); exhaustion exits with code 6. Transient 5xx
   are retried only for idempotent methods — POSTs are never re-sent.
