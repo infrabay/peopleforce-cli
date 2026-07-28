@@ -24,7 +24,7 @@ check-generated: ## Fail if the registry is stale w.r.t. the spec + overrides
 	@tmp=$$(mktemp -d); \
 	cp internal/registry/registry.gen.go $$tmp/registry.gen.go; \
 	cp testdata/golden/commands.json $$tmp/commands.json; \
-	go run ./internal/gen; \
+	go run ./internal/gen || { rm -rf $$tmp; echo "ERROR: the generator failed"; exit 1; }; \
 	if cmp -s $$tmp/registry.gen.go internal/registry/registry.gen.go && \
 	   cmp -s $$tmp/commands.json testdata/golden/commands.json; then \
 		rm -rf $$tmp; echo "generated files are up to date"; \

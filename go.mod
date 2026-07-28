@@ -23,5 +23,5 @@ require (
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 )
