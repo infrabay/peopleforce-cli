@@ -207,11 +207,11 @@ func convertTyped(t registry.ParamType, v, flag string) (any, error) {
 
 // buildJSONBody merges, in order of increasing precedence:
 // --input (file/stdin/inline JSON) → typed body flags → --set entries.
-func buildJSONBody(cmd *cobra.Command, op *registry.Op, inputArg string, setArgs []string) (map[string]any, error) {
+func buildJSONBody(app *App, cmd *cobra.Command, op *registry.Op, inputArg string, setArgs []string) (map[string]any, error) {
 	body := map[string]any{}
 
 	if inputArg != "" {
-		raw, err := readInput(inputArg)
+		raw, err := readInput(app, inputArg)
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +300,7 @@ func bodyFlagValue(cmd *cobra.Command, f *registry.BodyField) (any, error) {
 // increasing precedence: --input JSON object → typed flags → --set. Each
 // source fully overrides a field it names. The returned presence map feeds
 // checkRequired. Values of file-typed fields given as @path become file parts.
-func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, setArgs []string) ([]httpx.FieldValue, map[string]any, error) {
+func buildMultipartFields(app *App, cmd *cobra.Command, op *registry.Op, inputArg string, setArgs []string) ([]httpx.FieldValue, map[string]any, error) {
 	fieldByName := map[string]*registry.BodyField{}
 	for i := range op.Body {
 		fieldByName[op.Body[i].Name] = &op.Body[i]
@@ -343,7 +343,7 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 
 	// 1) --input: JSON object of scalars / arrays of scalars.
 	if inputArg != "" {
-		raw, err := readInput(inputArg)
+		raw, err := readInput(app, inputArg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -482,10 +482,14 @@ func unmarshalPreservingNumbers(raw []byte, dst any) error {
 }
 
 // readInput loads a request body from @file, "-" (stdin), or inline JSON.
-func readInput(arg string) ([]byte, error) {
+func readInput(app *App, arg string) ([]byte, error) {
 	switch {
 	case arg == "-":
-		data, err := io.ReadAll(os.Stdin)
+		r, err := app.claimStdin("--input -")
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(r)
 		if err != nil {
 			return nil, usageErr("reading stdin: %v", err)
 		}

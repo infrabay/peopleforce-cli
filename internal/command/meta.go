@@ -39,13 +39,19 @@ func newAuthCommand(app *App) *cobra.Command {
 		Short: "Save an API key to the config file",
 		Long: `Saves the key into the selected profile of the config file
 (` + "$XDG_CONFIG_HOME/peopleforce/config.toml" + `). Non-interactive by design:
-the key is passed via the global --api-key flag.`,
+the key is passed via the global --api-key flag, or read from stdin with
+--api-key - so it never appears in argv (where ps and CI logs can see it).`,
 		Example: `  peopleforce auth login --api-key "$KEY"
+  pass show peopleforce | peopleforce auth login --api-key -
   peopleforce auth login --api-key "$KEY" --profile staging`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if app.flagAPIKey == "" {
-				return usageErr("--api-key is required")
+			key, err := app.apiKeyFlag()
+			if err != nil {
+				return err
+			}
+			if key == "" {
+				return usageErr("--api-key is required (use --api-key - to read it from stdin)")
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -54,17 +60,10 @@ the key is passed via the global --api-key flag.`,
 			if cfg.Profiles == nil {
 				cfg.Profiles = map[string]config.Profile{}
 			}
-			// Same precedence as config.Resolve: flag > env > default —
-			// the key must land in the profile that resolution will read.
-			profile := app.flagProfile
-			if profile == "" {
-				profile = os.Getenv(config.EnvProfile)
-			}
-			if profile == "" {
-				profile = "default"
-			}
+			// The key must land in the profile that resolution will read back.
+			profile := app.profileName()
 			p := cfg.Profiles[profile]
-			p.APIKey = app.flagAPIKey
+			p.APIKey = key
 			if app.flagAPIURL != "" {
 				p.APIURL = app.flagAPIURL
 			}
@@ -83,11 +82,25 @@ the key is passed via the global --api-key flag.`,
 		Short: "Report where credentials come from and whether they work",
 		Long: `Prints the resolved credential source (flag > env > config file) and
 probes the API with a cheap request. Exit code 0 when authenticated,
-3 when the key is missing or rejected — agents use this to self-diagnose.`,
+3 when the key is missing or rejected, 2 when the config file itself cannot
+be read — agents use this to self-diagnose. The JSON envelope is emitted in
+every case; an unreadable config reports "config_error" with
+"authenticated": false.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := app.resolveConfig()
 			if err != nil {
+				// This is the command agents run to find out what is wrong, so
+				// it must stay machine-readable exactly when the config is the
+				// thing that is wrong.
+				if renderErr := renderValue(app, map[string]any{
+					"profile":        app.profileName(),
+					"api_key_source": "unknown",
+					"authenticated":  false,
+					"config_error":   err.Error(),
+				}); renderErr != nil {
+					return renderErr
+				}
 				return err
 			}
 			result := map[string]any{

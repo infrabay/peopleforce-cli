@@ -323,6 +323,86 @@ func TestAuthStatusProbe(t *testing.T) {
 	}
 }
 
+// auth status is the command agents run to work out why nothing works, so its
+// failure branches carry as much contract weight as the happy path: the exit
+// code alone has to separate "your key is wrong" from "the API is down".
+func TestAuthStatusFailureBranches(t *testing.T) {
+	t.Run("no key configured anywhere", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+		}))
+		defer srv.Close()
+
+		stdout, stderr, code := runCLI(t, "", "auth", "status", "--api-url", srv.URL)
+		if code != ExitAuth {
+			t.Errorf("exit = %d, want %d (stderr: %s)", code, ExitAuth, stderr)
+		}
+		if called {
+			t.Error("with no key to test there is nothing to probe; no request may be sent")
+		}
+		var got struct {
+			Data struct {
+				Authenticated bool   `json:"authenticated"`
+				KeySource     string `json:"api_key_source"`
+				ProbeStatus   *int   `json:"probe_status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+			t.Fatalf("auth status output: %v\n%s", err, stdout)
+		}
+		if got.Data.Authenticated || got.Data.KeySource != "none" {
+			t.Errorf("want authenticated:false with source none, got: %s", stdout)
+		}
+		if got.Data.ProbeStatus != nil {
+			t.Errorf("probe_status must be absent when nothing was probed: %s", stdout)
+		}
+		if !strings.Contains(stderr, config.EnvAPIKey) {
+			t.Errorf("stderr should say how to supply a key: %s", stderr)
+		}
+	})
+
+	// A 403 is almost never the key itself, so the diagnosis has to point at
+	// the allowlist and name the source the rejected key came from.
+	t.Run("403 is an auth failure naming the allowlist", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		stdout, stderr, code := runCLI(t, srv.URL, "auth", "status")
+		if code != ExitAuth {
+			t.Errorf("exit = %d, want %d (stderr: %s)", code, ExitAuth, stderr)
+		}
+		for _, want := range []string{"allowlist", "source: flag"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("stderr should mention %q, got: %s", want, stderr)
+			}
+		}
+		if !strings.Contains(stdout, `"probe_status": 403`) || !strings.Contains(stdout, `"authenticated": false`) {
+			t.Errorf("the diagnostic payload must still land on stdout: %s", stdout)
+		}
+	})
+
+	// A broken backend must not read as "your credentials are fine" (exit 0)
+	// nor as "your key is bad" (exit 3) — the caller should retry, not go
+	// hunting for a new key.
+	t.Run("500 exits with the server code", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		stdout, stderr, code := runCLI(t, srv.URL, "auth", "status")
+		if code != ExitServer {
+			t.Errorf("exit = %d, want %d (stderr: %s)", code, ExitServer, stderr)
+		}
+		if !strings.Contains(stdout, `"probe_status": 500`) || !strings.Contains(stdout, `"authenticated": false`) {
+			t.Errorf("the diagnostic payload must still land on stdout: %s", stdout)
+		}
+	})
+}
+
 func TestAllDegradesToSingleFetchOnNonList(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -475,4 +555,142 @@ func TestAllFlushesHeldPageOnEmptyPage(t *testing.T) {
 	if len(env.Data) != 2 {
 		t.Errorf("held page must be flushed when the list ends, got %d items: %s", len(env.Data), stdout)
 	}
+}
+
+// A key in argv is readable by `ps` and by any CI log running under `set -x`,
+// so `--api-key -` exists to keep it off the command line entirely.
+func TestAPIKeyStdinDelivery(t *testing.T) {
+	// echo, `pass show` and a file written on Windows deliver the same secret
+	// with three different line endings; all three must produce one header.
+	t.Run("newline variants deliver the same key", func(t *testing.T) {
+		for _, tc := range []struct{ name, stdin string }{
+			{"bare", "piped-key"},
+			{"lf", "piped-key\n"},
+			{"crlf", "piped-key\r\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotKey string
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotKey = r.Header.Get("X-API-KEY")
+					fmt.Fprint(w, `{"data":[]}`)
+				}))
+				defer srv.Close()
+
+				_, stderr, code := runWithStdin(t, "", tc.stdin, srv.URL, "employees", "list", "--api-key", "-")
+				if code != 0 {
+					t.Fatalf("exit = %d, stderr: %s", code, stderr)
+				}
+				if gotKey != "piped-key" {
+					t.Errorf("X-API-KEY = %q, want %q", gotKey, "piped-key")
+				}
+			})
+		}
+	})
+
+	t.Run("empty stdin is a usage error", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+		}))
+		defer srv.Close()
+
+		_, stderr, code := runWithStdin(t, "", "", srv.URL, "employees", "list", "--api-key", "-")
+		if code != ExitUsage {
+			t.Errorf("exit = %d, want %d (stderr: %s)", code, ExitUsage, stderr)
+		}
+		if called {
+			t.Error("an empty key must not reach the API as a request")
+		}
+	})
+
+	// Piping the key is still the flag channel: it outranks the config file,
+	// and auth status has to report the source it actually used.
+	t.Run("piped key outranks the config file and reports source flag", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "peopleforce"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cfg := "[profiles.default]\napi_key = \"from-config\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "peopleforce", "config.toml"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var gotKey string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotKey = r.Header.Get("X-API-KEY")
+			fmt.Fprint(w, `{"data":[]}`)
+		}))
+		defer srv.Close()
+
+		stdout, stderr, code := runWithStdin(t, dir, "piped-key\n", srv.URL, "auth", "status", "--api-key", "-")
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, stderr)
+		}
+		if gotKey != "piped-key" {
+			t.Errorf("X-API-KEY = %q; the piped key must win over the config file", gotKey)
+		}
+		if !strings.Contains(stdout, `"api_key_source": "flag"`) {
+			t.Errorf("api_key_source must stay flag: %s", stdout)
+		}
+		if strings.Contains(stdout, "piped-key") {
+			t.Errorf("the key must never be echoed back: %s", stdout)
+		}
+	})
+
+	t.Run("auth login persists the piped key without argv exposure", func(t *testing.T) {
+		const key = "login-piped-key"
+		args := []string{"auth", "login", "--api-key", "-"}
+
+		_, stderr, code := runWithStdin(t, "", key+"\n", "", args...)
+		if code != 0 {
+			t.Fatalf("exit = %d, stderr: %s", code, stderr)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Profiles["default"].APIKey != key {
+			t.Errorf("piped key must be saved to the profile; got: %+v", cfg.Profiles)
+		}
+		// argv is exactly what this flow exists to keep the secret out of.
+		if strings.Contains(strings.Join(args, " "), key) {
+			t.Errorf("the key reached the command line: %v", args)
+		}
+	})
+
+	// Splitting one stream between the key and the request body would feed
+	// each the other's bytes, so the combination is rejected — and because the
+	// claim happens before any consumer runs, flag order cannot change it.
+	t.Run("claiming stdin twice fails identically in either flag order", func(t *testing.T) {
+		var messages []string
+		for _, args := range [][]string{
+			{"employees", "update", "1", "--api-key", "-", "--input", "-"},
+			{"employees", "update", "1", "--input", "-", "--api-key", "-"},
+		} {
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+			}))
+
+			_, stderr, code := runWithStdin(t, "", "piped-key\n", srv.URL, args...)
+			srv.Close()
+
+			if code != ExitUsage {
+				t.Errorf("%v: exit = %d, want %d (stderr: %s)", args, code, ExitUsage, stderr)
+			}
+			if called {
+				t.Errorf("%v: no request may be sent once stdin is contested", args)
+			}
+			// The key claims the stream first, so the diagnosis reads the same
+			// way however the flags were ordered — never a JSON parse error
+			// from a body that the key already drained.
+			if !strings.Contains(stderr, "--api-key - and --input -") {
+				t.Errorf("%v: stderr must name both claimants, key first: %s", args, stderr)
+			}
+			messages = append(messages, stderr)
+		}
+		if messages[0] != messages[1] {
+			t.Errorf("the conflict must not depend on flag order:\n%s\n%s", messages[0], messages[1])
+		}
+	})
 }

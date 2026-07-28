@@ -39,7 +39,7 @@ func newOpCommand(app *App, op *registry.Op, verb string) *cobra.Command {
 		Short:   op.Summary,
 		Long:    long,
 		Example: exampleBlock(op.Examples),
-		Args:    exactArgs(op, len(op.PathParams)),
+		Args:    exactArgs(op),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runOp(app, op, cmd, args)
 		},
@@ -65,8 +65,9 @@ func exampleBlock(examples []string) string {
 	return "  " + strings.Join(examples, "\n  ")
 }
 
-func exactArgs(op *registry.Op, n int) cobra.PositionalArgs {
+func exactArgs(op *registry.Op) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
+		n := len(op.PathParams)
 		if len(args) != n {
 			names := make([]string, n)
 			for i, p := range op.PathParams {
@@ -133,7 +134,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	case registry.BodyJSON:
 		inputArg, _ := cmd.Flags().GetString("input")
 		setArgs, _ := cmd.Flags().GetStringArray("set")
-		jsonBody, err = buildJSONBody(cmd, op, inputArg, setArgs)
+		jsonBody, err = buildJSONBody(app, cmd, op, inputArg, setArgs)
 		if err != nil {
 			return err
 		}
@@ -148,7 +149,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	case registry.BodyMultipart:
 		inputArg, _ := cmd.Flags().GetString("input")
 		setArgs, _ := cmd.Flags().GetStringArray("set")
-		fields, presence, err := buildMultipartFields(cmd, op, inputArg, setArgs)
+		fields, presence, err := buildMultipartFields(app, cmd, op, inputArg, setArgs)
 		if err != nil {
 			return err
 		}
@@ -208,6 +209,10 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	return renderResponse(app, resp)
 }
 
+// heldDupDropped is reported whenever a held replay page is discarded because
+// no further page ever arrived to vindicate it.
+const heldDupDropped = "warning: the last page fetched was byte-identical to the first and no further page was available to tell a replaying backend from real duplicate data; it was dropped"
+
 // runAllPages loops the page parameter, concatenating data arrays into a
 // single envelope. With pagination metadata it stops at metadata.pages;
 // without it (some endpoints omit it) it keeps paging until an empty page —
@@ -224,20 +229,62 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 	page := startPage
 	pagesFetched := 0
 	warnedNoMeta := false
+	// resumeFrom is the first page NOT represented in the emitted data; 0 once
+	// the run has covered everything the endpoint has.
+	resumeFrom := 0
 
-	// A run that dies on page N throws away the N-1 pages already transferred,
-	// so say where it stopped: --page doubles as the resume point for --all.
-	resumeHint := func(err error) error {
-		var ee *ExitError
-		if !errors.As(err, &ee) || pagesFetched == 0 {
+	// emit renders the pages collected so far. nextPage is 0 for a run that
+	// completed and the page that could not be fetched for one that died.
+	emit := func(nextPage int) error {
+		if allItems == nil {
+			allItems = []json.RawMessage{} // keep the contract: lists are never null
+		}
+		data, err := json.Marshal(allItems)
+		if err != nil {
 			return err
 		}
-		resume := fmt.Sprintf("re-run with --all --page %d to resume", page)
-		if op.Command != "" {
-			resume = fmt.Sprintf("re-run with `peopleforce %s --all --page %d` to resume", op.Command, page)
+		meta := map[string]any{}
+		for k, v := range lastMeta {
+			meta[k] = v
 		}
-		ee.Message = fmt.Sprintf("%s (pages %d-%d fetched successfully, %d items; %s)",
-			ee.Message, startPage, page-1, len(allItems), resume)
+		delete(meta, "page")
+		meta["fetched"] = len(allItems)
+		if nextPage > 0 {
+			meta["truncated"] = true
+			meta["next_page"] = nextPage
+		}
+		return renderNormalized(app, envelope.Normalized{Data: data, Meta: meta})
+	}
+
+	// A run that dies on page N still hands over the N-1 pages already
+	// transferred, marked truncated, alongside the non-zero exit code: the
+	// resume advice is only honest if what it resumes from is on stdout.
+	truncate := func(err error) error {
+		var ee *ExitError
+		if !errors.As(err, &ee) || pagesFetched == 0 {
+			return err // nothing was collected, so there is nothing to hand over
+		}
+		next := page
+		if pendingDup != nil {
+			// The held page was never added to allItems, so resuming past it
+			// would lose it: point the caller back at that page, not this one.
+			fmt.Fprintln(app.Stderr, heldDupDropped)
+			pendingDup = nil
+			next = page - 1
+		}
+		// ExitValidation is emit reporting errors carried inside the payload,
+		// not a write failure; anything else means the partial data never
+		// reached stdout, and resuming from page N would then lose 1..N-1.
+		if emitErr := emit(next); emitErr != nil && CodeFor(emitErr) != ExitValidation {
+			fmt.Fprintf(app.Stderr, "warning: the %d page(s) already fetched could not be written to stdout: %v\n", pagesFetched, emitErr)
+			return ee
+		}
+		resume := fmt.Sprintf("re-run with --all --page %d", next)
+		if op.Command != "" {
+			resume = fmt.Sprintf("re-run with `peopleforce %s --all --page %d`", op.Command, next)
+		}
+		ee.Message = fmt.Sprintf("%s (%s; %s to fetch the rest)",
+			ee.Message, app.truncationNote(len(allItems), next), resume)
 		return ee
 	}
 
@@ -247,17 +294,25 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		req := httpx.Request{Method: op.Method, Path: path, Query: query, Body: body, ContentType: contentType}
 		resp, err := client.Do(context.Background(), req)
 		if err != nil {
-			return resumeHint(wrapTransport(err))
+			return truncate(wrapTransport(err))
 		}
 		if resp.Status < 200 || resp.Status > 299 {
-			return resumeHint(classifyStatus(resp.Status, resp.Body))
+			return truncate(classifyStatus(resp.Status, resp.Body))
 		}
 		n := envelope.Normalize(resp.Body, resp.Status)
 
 		var items []json.RawMessage
 		if err := json.Unmarshal(n.Data, &items); err != nil {
-			// Not a list — --all degrades to a single fetch.
-			return renderNormalized(app, n)
+			if pagesFetched == 0 {
+				// Not a list at all — --all degrades to a single fetch.
+				return renderNormalized(app, n)
+			}
+			// Mid-run: the endpoint stopped returning arrays. Handing back only
+			// this page would silently drop every page already collected, so
+			// keep them and mark the result incomplete.
+			fmt.Fprintf(app.Stderr, "warning: page %d is not a list; stopping and keeping the %d page(s) already fetched\n", page, pagesFetched)
+			resumeFrom = page
+			break
 		}
 		pagesFetched++
 		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
@@ -288,13 +343,15 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			// it rather than silently double-count.
 			if pagesFetched >= maxPages {
 				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
-				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to the first and no further page was available to tell a replaying backend from real duplicate data; it was dropped — raise --max-pages to resolve")
+				fmt.Fprintln(app.Stderr, heldDupDropped+" — raise --max-pages to resolve")
 				pendingDup = nil
+				resumeFrom = page // the dropped page is not in the data
 				break
 			}
 			if ok && current >= pages {
-				fmt.Fprintln(app.Stderr, "warning: the last page fetched was byte-identical to the first and no further page was available to tell a replaying backend from real duplicate data; it was dropped")
+				fmt.Fprintln(app.Stderr, heldDupDropped)
 				pendingDup = nil
+				resumeFrom = page // the dropped page is not in the data
 				break
 			}
 			page++
@@ -316,25 +373,13 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			} else {
 				fmt.Fprintf(app.Stderr, "stopped at --max-pages %d\n", maxPages)
 			}
+			resumeFrom = page + 1
 			break
 		}
 		page++
 	}
 
-	if allItems == nil {
-		allItems = []json.RawMessage{} // keep the contract: lists are never null
-	}
-	data, err := json.Marshal(allItems)
-	if err != nil {
-		return err
-	}
-	meta := map[string]any{}
-	for k, v := range lastMeta {
-		meta[k] = v
-	}
-	meta["fetched"] = len(allItems)
-	delete(meta, "page")
-	return renderNormalized(app, envelope.Normalized{Data: data, Meta: meta})
+	return emit(resumeFrom)
 }
 
 func renderResponse(app *App, resp *httpx.Response) error {
@@ -363,12 +408,7 @@ func renderNormalized(app *App, n envelope.Normalized) error {
 // printDryRun emits the exact request that would be sent. The API key is
 // never included.
 func printDryRun(app *App, method, path string, query []httpx.QueryPair, body any) error {
-	// --dry-run must work without credentials but still honor --api-url /
-	// PEOPLEFORCE_API_URL / config, so build the preview from resolved config.
-	client := &httpx.Client{}
-	if r, err := app.resolveConfig(); err == nil {
-		client.BaseURL = r.APIURL
-	}
+	client := app.previewClient()
 	preview := map[string]any{
 		"dry_run": true,
 		"method":  method,

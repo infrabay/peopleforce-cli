@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -190,22 +191,90 @@ func TestMultipartDocumentUpload(t *testing.T) {
 	}
 }
 
+// update_avatar is the only op that ships a file as a data-URI string inside
+// a JSON body, and the API parses that string: the bare mime type, the name=
+// segment and the base64 payload are all wire contract.
+func TestEmployeesUpdateAvatarSendsDataURI(t *testing.T) {
+	photo := filepath.Join(t.TempDir(), "photo.png")
+	raw := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff}
+	if err := os.WriteFile(photo, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotMethod, gotPath, gotBody = r.Method, r.URL.Path, string(b)
+		fmt.Fprint(w, `{"data":{"id":42}}`)
+	}))
+	defer srv.Close()
+
+	_, stderr, code := runCLI(t, srv.URL, "employees", "update-avatar", "42", "--avatar", "@"+photo)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr)
+	}
+	if gotMethod != "PUT" || gotPath != "/employees/42/update_avatar" {
+		t.Errorf("request = %s %s, want PUT /employees/42/update_avatar", gotMethod, gotPath)
+	}
+	wantURI := "data:image/png;name=photo.png;base64," + base64.StdEncoding.EncodeToString(raw)
+	if want := `{"avatar":"` + wantURI + `"}`; gotBody != want {
+		t.Errorf("body = %s\nwant     %s", gotBody, want)
+	}
+}
+
+func TestEmployeesUpdateAvatarRejectsBadFileRef(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.png")
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"no @ prefix", "photo.png", "@"},
+		{"missing file", "@" + missing, "absent.png"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			sent := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sent = true
+			}))
+			defer srv.Close()
+
+			_, stderr, code := runCLI(t, srv.URL, "employees", "update-avatar", "42", "--avatar", tt.value)
+			if code != ExitUsage {
+				t.Errorf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
+			}
+			if sent {
+				t.Error("request must not be sent when --avatar cannot be read")
+			}
+			if !strings.Contains(stderr, "--avatar") || !strings.Contains(stderr, tt.want) {
+				t.Errorf("stderr should name the flag and %q, got: %s", tt.want, stderr)
+			}
+		})
+	}
+}
+
 func TestExitCodesFromHTTPStatuses(t *testing.T) {
 	tests := []struct {
 		status   int
+		body     string
 		wantCode int
 		wantType string
 	}{
-		{401, ExitAuth, "auth"},
-		{404, ExitNotFound, "not_found"},
-		{422, ExitValidation, "validation"},
-		{500, ExitServer, "server"},
+		{401, `{"message":"nope"}`, ExitAuth, "auth"},
+		{404, `{"message":"nope"}`, ExitNotFound, "not_found"},
+		{400, `{"message":"malformed"}`, ExitValidation, "validation"},
+		{422, `{"errors":{"email":["is invalid"]}}`, ExitValidation, "validation"},
+		{500, `{"message":"nope"}`, ExitServer, "server"},
+		// No arm of classifyStatus matches 418; the default must still yield a
+		// non-zero exit rather than letting an unknown status read as success.
+		{418, `{"message":"teapot"}`, ExitValidation, "api"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprint(tt.status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.status)
-				fmt.Fprint(w, `{"message":"nope"}`)
+				fmt.Fprint(w, tt.body)
 			}))
 			defer srv.Close()
 
@@ -215,8 +284,9 @@ func TestExitCodesFromHTTPStatuses(t *testing.T) {
 			}
 			var e struct {
 				Error struct {
-					Type   string `json:"type"`
-					Status int    `json:"status"`
+					Type   string          `json:"type"`
+					Status int             `json:"status"`
+					Detail json.RawMessage `json:"detail"`
 				} `json:"error"`
 			}
 			if err := json.Unmarshal([]byte(stderr), &e); err != nil {
@@ -225,8 +295,27 @@ func TestExitCodesFromHTTPStatuses(t *testing.T) {
 			if e.Error.Type != tt.wantType || e.Error.Status != tt.status {
 				t.Errorf("error = %+v", e.Error)
 			}
+			// detail is the only route by which an agent reads the API's
+			// field-level validation messages.
+			if len(e.Error.Detail) == 0 {
+				t.Fatalf("error.detail is empty; the API response body was dropped")
+			}
+			if got := compactJSON(t, e.Error.Detail); got != tt.body {
+				t.Errorf("detail = %s, want the response body %s", got, tt.body)
+			}
 		})
 	}
+}
+
+// compactJSON strips the indentation PrintError applies, so a detail payload
+// can be compared against the literal body the server sent.
+func compactJSON(t *testing.T, b []byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		t.Fatalf("compacting %q: %v", b, err)
+	}
+	return buf.String()
 }
 
 func TestRateLimitExhaustionExitCode(t *testing.T) {

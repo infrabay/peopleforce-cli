@@ -14,8 +14,25 @@ Requires an API token in `PEOPLEFORCE_API_KEY` (or a config-file profile).
 Verify before doing work:
 
 ```bash
-peopleforce auth status   # exit 0 = authenticated, 3 = missing/rejected key
+peopleforce auth status   # 0 = authenticated, 3 = missing/rejected key,
+                          # 2 = the config file itself could not be read
 ```
+
+`auth status` prints its envelope even when it exits non-zero: an unreadable
+config reports `config_error` alongside `"authenticated": false`, so the
+diagnosis is machine-readable exactly when something is broken.
+
+A key passed in argv is visible to `ps`, to `/proc/<pid>/cmdline`, and to CI
+logs under `set -x`. Use the environment variable, or pipe the key in with
+the `-` sentinel:
+
+```bash
+pass show peopleforce | peopleforce auth login --api-key -     # persist it
+pass show peopleforce | peopleforce employees list --api-key - # one-off
+```
+
+`--api-key -` and `--input -` both consume stdin, so combining them is a
+usage error (exit 2), never a race for the same stream.
 
 401 and 403 mean different things and are worth reading carefully: 401 is a
 missing or invalid key, while 403 means the key was recognized but the request
@@ -134,9 +151,18 @@ Note: `employees list` returns a slim record without `fields`; use
 
 - Lists take `--page N` (page size is fixed server-side). `--all` follows
   every page (capped by `--max-pages`, default 20); empty results are `[]`.
-- If an `--all` run fails partway it exits non-zero and names the resume
-  point; re-run with `--all --page N` to continue instead of starting over.
-  `--max-pages` limits pages fetched by that run, not the page number.
+- An `--all` run that fails partway still hands over what it collected: the
+  pages already fetched are on stdout with `"truncated": true` and
+  `"next_page": N` in `meta`, and the exit code is the failure's own (7, 8).
+  Keep that data and re-run with `--all --page N` for the rest — the two
+  results concatenate. Only a run that failed on its very first page prints
+  nothing. `--output ndjson` drops `meta`, so truncation is invisible there:
+  and so do `table` and `--jq`. `--max-pages` limits pages fetched by that
+  run, not the page number, and a run cut short by the cap carries the same
+  `"truncated"` / `"next_page"` markers while exiting 0. Under the default
+  `--output json`, treat the absence of those markers — not the exit code —
+  as proof a list is complete; under any other output there is no completeness
+  signal on stdout at all, so use json when it matters.
 - Team membership comes only from `teams list` (no GET /teams/{id}), and
   `teams create` cannot set members — use `teams members add`.
 - 429 rate limits are retried automatically (honoring Retry-After) up to

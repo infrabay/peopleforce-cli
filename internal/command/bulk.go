@@ -63,7 +63,7 @@ with the remainder rather than the whole file.
 }
 
 func runBulkUpdate(app *App, inputArg string) error {
-	raw, err := readInput(inputArg)
+	raw, err := readInput(app, inputArg)
 	if err != nil {
 		return err
 	}
@@ -78,10 +78,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 	enc := json.NewEncoder(app.Stdout) // NDJSON: one compact line per record
 
 	if app.dryRun {
-		client := &httpx.Client{}
-		if r, err := app.resolveConfig(); err == nil {
-			client.BaseURL = r.APIURL
-		}
+		client := app.previewClient()
 		for _, rec := range records {
 			if err := enc.Encode(map[string]any{
 				"id":      rec.ID,

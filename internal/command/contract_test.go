@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -193,5 +194,42 @@ func TestDryRunAcceptsReadableUploadFile(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "@"+doc) {
 		t.Errorf("preview should show the file reference, got: %s", stdout)
+	}
+}
+
+// --dry-run tolerates an unresolvable config so it works without credentials,
+// but the flag and the environment do not come from the config file: ignoring
+// them made the preview name the production API while the real run would have
+// gone somewhere else entirely.
+func TestDryRunHonorsAPIURLWhenConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "peopleforce"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "peopleforce", "config.toml"), []byte("garbage = = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		t.Setenv("PEOPLEFORCE_API_KEY", "")
+		t.Setenv("PEOPLEFORCE_PROFILE", "")
+		root, app := NewRoot()
+		var out, errBuf bytes.Buffer
+		app.Stdout, app.Stderr = &out, &errBuf
+		root.SetOut(&out)
+		root.SetErr(&errBuf)
+		root.SetArgs(args)
+		_ = root.Execute()
+		return out.String()
+	}
+
+	stdout := run("employees", "list", "--dry-run", "--api-url", "http://example.internal:9999")
+	if !strings.Contains(stdout, "http://example.internal:9999") {
+		t.Errorf("preview ignored --api-url with a broken config: %s", stdout)
+	}
+	if strings.Contains(stdout, "app.peopleforce.io") {
+		t.Errorf("preview fell back to production despite an explicit --api-url: %s", stdout)
 	}
 }

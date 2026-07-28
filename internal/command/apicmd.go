@@ -130,7 +130,7 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 			if inputArg != "" || len(setArgs) > 0 {
 				body = map[string]any{}
 				if inputArg != "" {
-					raw, err := readInput(inputArg)
+					raw, err := readInput(app, inputArg)
 					if err != nil {
 						return err
 					}

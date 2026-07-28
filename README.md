@@ -30,9 +30,29 @@ peopleforce auth login --api-key "pf_..."    # ~/.config/peopleforce/config.toml
 peopleforce auth status                      # verify: source + live probe
 ```
 
+An API key in argv is world-readable through `/proc/<pid>/cmdline`, shows up
+in `ps` and in CI logs under `set -x`, so `--api-key -` reads it from stdin
+instead (same `-` sentinel as `--input`):
+
+```bash
+pass show peopleforce | peopleforce auth login --api-key -
+pass show peopleforce | peopleforce employees list --api-key -
+```
+
+`--api-key -` and `--input -` would consume the same stream, so using both is
+a usage error (exit 2). There is no interactive prompt: a TTY prompt would
+break the non-interactive contract agents rely on.
+
 Precedence: `--api-key` flag > `PEOPLEFORCE_API_KEY` > config file profile
-(`--profile` / `PEOPLEFORCE_PROFILE`). `PEOPLEFORCE_API_URL` overrides the
-base URL.
+(`--profile` / `PEOPLEFORCE_PROFILE`). Naming a profile that does not exist is
+an error when nothing else supplies a key, and a stderr warning when the key
+came from the flag or the environment — a typo must not quietly run against
+whichever tenant the environment happens to hold, but it also must not veto a
+key that outranks the config file. `PEOPLEFORCE_API_URL` overrides the
+base URL. `auth status` emits its JSON envelope even when it fails — a config
+file it cannot parse is reported as `config_error` with
+`"authenticated": false` (exit 2), which is precisely when a self-diagnosing
+agent needs it.
 
 ## Output contract (for agents)
 
@@ -54,9 +74,22 @@ base URL.
   never `null`). `--all` reports per-page progress on stderr, replaces
   `meta.page` with `meta.fetched` (the total it collected), and drops a page
   that merely replays page 1 — a backend ignoring `?page=` never inflates the
-  result silently. If an `--all` run fails partway it reports how far it got
-  and the exact command to resume: `--page N` alongside `--all` is the start
-  page, and `--max-pages` caps how many pages that run fetches.
+  result silently.
+- An `--all` run that fails partway still writes the pages it did fetch to
+  stdout, marked `"truncated": true` with `"next_page": N` in `meta`, while
+  the exit code stays that of the failure (7 for a 5xx, 8 for a transport
+  error) and the error itself goes to stderr. Keep that partial result and
+  re-run with `--all --page N` to fetch the rest; the two concatenate. A run
+  that fails on its first page writes nothing. `--page N` alongside `--all`
+  is the start page and `--max-pages` caps how many pages that run fetches.
+- The same `"truncated"` / `"next_page"` markers appear whenever `--max-pages`
+  cuts a run short, which exits 0 because the cap is deliberate. Any `--all`
+  envelope without them covered everything the endpoint had.
+- Those markers live in `meta`, so they only exist under the default
+  `--output json`. With `ndjson`, `table` or `--jq` there is no `meta`, and a
+  run truncated by `--max-pages` also exits 0 — stdout and the exit code then
+  look exactly like a complete run, and only the stderr note reveals the cap.
+  Use `--output json` whenever completeness has to be verifiable.
 - `--output ndjson` streams one data item per line and omits `meta` entirely;
   use the default `--output json` when you need pagination info.
 - Other globals: `--timeout` (default 30s) and `--verbose` (log requests and

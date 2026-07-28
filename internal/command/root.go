@@ -31,10 +31,17 @@ type App struct {
 	// them; production wiring uses os.Stdout/os.Stderr.
 	Stdout io.Writer
 	Stderr io.Writer
+	// Stdin backs the "-" sentinel of --input and --api-key. It is handed out
+	// through claimStdin, never read directly.
+	Stdin io.Reader
 
 	flagAPIKey  string
 	flagAPIURL  string
 	flagProfile string
+
+	stdinOwner   string // flag that already consumed Stdin, "" while unclaimed
+	stdinKey     string // --api-key - resolved from stdin
+	stdinKeyDone bool
 
 	outFormat  string
 	jqExpr     string
@@ -56,10 +63,8 @@ func (a *App) JSONErrors() bool { return a.outFormat != "table" }
 // validateOutputOptions rejects bad global flag values up front, before any
 // request is issued.
 func (a *App) validateOutputOptions() error {
-	switch a.outFormat {
-	case "json", "table", "ndjson":
-	default:
-		return usageErr("unknown output format %q (want json, table, or ndjson)", a.outFormat)
+	if !output.ValidFormat(a.outFormat) {
+		return usageErr("unknown output format %q (want %s)", a.outFormat, output.FormatList())
 	}
 	if a.jqExpr != "" {
 		if _, err := gojq.Parse(a.jqExpr); err != nil {
@@ -89,14 +94,84 @@ func (a *App) outputOptions() output.Options {
 	}
 }
 
+// profileName mirrors config.Resolve's profile precedence (flag > env >
+// "default") for the paths that need the name without — or before — a
+// successful resolution.
+func (a *App) profileName() string {
+	if a.flagProfile != "" {
+		return a.flagProfile
+	}
+	if p := os.Getenv(config.EnvProfile); p != "" {
+		return p
+	}
+	return "default"
+}
+
+// claimStdin hands stdin to exactly one consumer per run. Both `--input -`
+// and `--api-key -` want the stream, and letting them split it would have the
+// key swallow the request body — or the reverse, depending on which ran first.
+func (a *App) claimStdin(who string) (io.Reader, error) {
+	if a.stdinOwner != "" {
+		return nil, usageErr("%s and %s both read stdin, which can only be consumed once", a.stdinOwner, who)
+	}
+	if a.Stdin == nil {
+		return nil, usageErr("%s: no stdin is available", who)
+	}
+	a.stdinOwner = who
+	return a.Stdin, nil
+}
+
+// apiKeyFlag returns the --api-key value, resolving the "-" sentinel from
+// stdin. Resolution happens before config precedence is applied, so
+// config.Resolve keeps seeing a literal key and still reports source "flag".
+func (a *App) apiKeyFlag() (string, error) {
+	if a.stdinKeyDone {
+		return a.stdinKey, nil
+	}
+	if a.flagAPIKey != "-" {
+		return a.flagAPIKey, nil
+	}
+	// Reading a terminal would hang with no prompt and no timeout, and adding a
+	// prompt would break the non-interactive contract agents depend on. The key
+	// has to be piped.
+	if f, ok := a.Stdin.(*os.File); ok && isatty.IsTerminal(f.Fd()) {
+		return "", usageErr("--api-key - expects the key on stdin, but stdin is a terminal; pipe it instead (e.g. `pass show pf | peopleforce ... --api-key -`)")
+	}
+	r, err := a.claimStdin("--api-key -")
+	if err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", usageErr("--api-key -: reading stdin: %v", err)
+	}
+	// Trim, so a key piped without a trailing newline, with one, or with CRLF
+	// all yield the same token instead of an X-API-KEY header the API rejects.
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		return "", usageErr("--api-key -: stdin is empty")
+	}
+	// Memoised separately from flagAPIKey: a piped key that trims to "-" would
+	// otherwise look like the sentinel again and re-enter this branch.
+	a.stdinKey, a.stdinKeyDone = key, true
+	return key, nil
+}
+
 // resolveConfig resolves credentials once per process (flag > env > file).
 func (a *App) resolveConfig() (*config.Resolved, error) {
 	if a.resolved != nil {
 		return a.resolved, nil
 	}
-	r, err := config.Resolve(a.flagAPIKey, a.flagAPIURL, a.flagProfile)
+	key, err := a.apiKeyFlag()
+	if err != nil {
+		return nil, err
+	}
+	r, err := config.Resolve(key, a.flagAPIURL, a.flagProfile)
 	if err != nil {
 		return nil, usageErr("loading config: %v", err)
+	}
+	if r.Warning != "" {
+		fmt.Fprintf(a.Stderr, "warning: %s\n", r.Warning)
 	}
 	a.resolved = &r
 	return a.resolved, nil
@@ -110,8 +185,16 @@ func (a *App) client() (*httpx.Client, error) {
 		return nil, err
 	}
 	if r.APIKey == "" {
+		// Name the profile when one was asked for: the key is often present in
+		// the config file, just under a different profile than the requested one.
+		scope, profileFlag := "", ""
+		if r.Profile != "default" {
+			scope = fmt.Sprintf(" for profile %q", r.Profile)
+			profileFlag = " --profile " + r.Profile
+		}
 		return nil, &ExitError{Code: ExitAuth, Type: "auth",
-			Message: "no API key configured: set " + config.EnvAPIKey + ", pass --api-key, or run `peopleforce auth login --api-key <key>`"}
+			Message: fmt.Sprintf("no API key configured%s: set %s, pass --api-key (or --api-key - to read it from stdin), "+
+				"or run `peopleforce auth login --api-key <key>%s`", scope, config.EnvAPIKey, profileFlag)}
 	}
 	a.warnInsecureURL(r.APIURL)
 	c := &httpx.Client{
@@ -127,6 +210,30 @@ func (a *App) client() (*httpx.Client, error) {
 		}
 	}
 	return c, nil
+}
+
+// previewClient builds the credential-free client that --dry-run uses to
+// render the URL it would call. --dry-run must work with no credentials at
+// all, so a config that cannot be resolved is not fatal here — but when it
+// does resolve, --api-url / PEOPLEFORCE_API_URL / the config file still decide
+// the host, or the preview would name an endpoint the real run never touches.
+func (a *App) previewClient() *httpx.Client {
+	c := &httpx.Client{}
+	if r, err := a.resolveConfig(); err == nil {
+		c.BaseURL = r.APIURL
+		return c
+	}
+	// Config resolution failed (unparseable file, missing profile). The flag
+	// and the environment do not depend on the config file, so they must still
+	// decide the host — otherwise the preview claims the production API while
+	// the real run would target somewhere else entirely.
+	switch {
+	case a.flagAPIURL != "":
+		c.BaseURL = a.flagAPIURL
+	default:
+		c.BaseURL = os.Getenv(config.EnvAPIURL)
+	}
+	return c
 }
 
 // warnInsecureURL flags a plaintext API URL. A copy-pasted http:// base URL
@@ -185,7 +292,7 @@ Discovery for agents:
 
 // NewRoot builds the full command tree.
 func NewRoot() (*cobra.Command, *App) {
-	app := &App{Stdout: os.Stdout, Stderr: os.Stderr}
+	app := &App{Stdout: os.Stdout, Stderr: os.Stderr, Stdin: os.Stdin}
 
 	root := &cobra.Command{
 		Use:           "peopleforce",
@@ -196,15 +303,22 @@ func NewRoot() (*cobra.Command, *App) {
 		// Fail on bad --output/--jq BEFORE any request is sent — a flag typo
 		// must never discard the response of an already-executed mutation.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return app.validateOutputOptions()
+			if err := app.validateOutputOptions(); err != nil {
+				return err
+			}
+			// Claim stdin for the key here, before any body reader can touch
+			// it, so `--api-key - --input -` is always the same usage error
+			// rather than whichever consumer happened to run first.
+			_, err := app.apiKeyFlag()
+			return err
 		},
 	}
 
 	pf := root.PersistentFlags()
-	pf.StringVar(&app.flagAPIKey, "api-key", "", "API key (prefer "+config.EnvAPIKey+" to keep it out of shell history)")
+	pf.StringVar(&app.flagAPIKey, "api-key", "", "API key, or - to read it from stdin (a key in argv is visible to ps and to CI logs; prefer "+config.EnvAPIKey+" or -)")
 	pf.StringVar(&app.flagAPIURL, "api-url", "", "API base URL (default "+httpx.DefaultBaseURL+")")
 	pf.StringVar(&app.flagProfile, "profile", "", "config profile name (default \"default\")")
-	pf.StringVarP(&app.outFormat, "output", "o", "json", "output format: json, table, or ndjson")
+	pf.StringVarP(&app.outFormat, "output", "o", "json", "output format: "+output.FormatList())
 	pf.StringVar(&app.jqExpr, "jq", "", "filter the response with a jq expression (in-process, no jq needed)")
 	pf.BoolVarP(&app.jqRaw, "raw", "r", false, "with --jq: print string results without JSON quotes (like jq -r)")
 	pf.StringSliceVar(&app.fields, "fields", nil, "project only these fields from results")
@@ -228,29 +342,29 @@ func NewRoot() (*cobra.Command, *App) {
 
 // groupShort provides one-line descriptions for curated command groups.
 var groupShort = map[string]string{
-	"employees":   "Manage employees (people records, salaries, documents, lifecycle)",
-	"leave":       "Leave requests, adjustments, types and policies",
-	"tasks":       "Tasks assigned to employees",
-	"teams":       "Teams and team membership",
-	"departments": "Departments",
-	"divisions":   "Divisions",
-	"locations":   "Locations",
-	"positions":   "Positions",
-	"holidays":    "Company holidays",
-	"calendars":   "Calendars",
-	"termination": "Termination types and reasons",
-	"recruitment": "Recruitment (candidates)",
-	"candidates":  "Recruitment candidates",
+	"employees":       "Manage employees (people records, salaries, documents, lifecycle)",
+	"leave":           "Leave requests, adjustments, types and policies",
+	"tasks":           "Tasks assigned to employees",
+	"teams":           "Teams and team membership",
+	"departments":     "Departments",
+	"divisions":       "Divisions",
+	"locations":       "Locations",
+	"positions":       "Positions",
+	"holidays":        "Company holidays",
+	"calendars":       "Calendars",
+	"termination":     "Termination types and reasons",
+	"recruitment":     "Recruitment (candidates)",
+	"candidates":      "Recruitment candidates",
 	"employee-fields": "Employee custom field definitions (internal_name lookup)",
-	"requests":    "Leave requests",
-	"types":       "Reference types",
-	"reasons":     "Reference reasons",
-	"salaries":    "Employee salaries",
-	"documents":   "Employee documents",
-	"notes":       "Employee notes",
-	"members":     "Team members",
-	"adjustments": "Leave adjustments",
-	"policies":    "Leave policies",
+	"requests":        "Leave requests",
+	"types":           "Reference types",
+	"reasons":         "Reference reasons",
+	"salaries":        "Employee salaries",
+	"documents":       "Employee documents",
+	"notes":           "Employee notes",
+	"members":         "Team members",
+	"adjustments":     "Leave adjustments",
+	"policies":        "Leave policies",
 }
 
 // newGroup builds an intermediate command node. A group names no operation,
@@ -311,5 +425,26 @@ func mountCurated(root *cobra.Command, app *App) {
 	// Synthetic commands that compose registry ops.
 	if employees, ok := nodes["employees"]; ok {
 		employees.AddCommand(newEmployeesBulkUpdateCommand(app))
+	}
+}
+
+// truncationNote describes an incomplete --all result for the stderr error,
+// naming the meta fields only when the chosen output format actually carries
+// meta: ndjson emits bare records and table prints columns, so pointing an
+// operator at meta.truncated there would send them looking for something that
+// was never written.
+func (a *App) truncationNote(items, nextPage int) string {
+	// --jq replaces the envelope with whatever the expression selects, so meta
+	// survives only by coincidence; ndjson and table never carry it.
+	switch {
+	case a.jqExpr != "":
+		return fmt.Sprintf("the %d item(s) already fetched are on stdout, but --jq projected the envelope away, "+
+			"so meta.truncated is not there — the exit code is the only completeness signal", items)
+	case a.outFormat == "" || a.outFormat == "json":
+		return fmt.Sprintf("the %d item(s) already fetched are on stdout as a truncated envelope "+
+			"(meta.truncated=true, meta.next_page=%d)", items, nextPage)
+	default:
+		return fmt.Sprintf("the %d item(s) already fetched are on stdout, but --output %s carries no meta, "+
+			"so the exit code is the only completeness signal", items, a.outFormat)
 	}
 }

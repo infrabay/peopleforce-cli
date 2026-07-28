@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"net/http"
 	"testing"
 	"time"
 )
@@ -26,5 +27,26 @@ func TestRetryDelayDoesNotOverflowAtHighAttempts(t *testing.T) {
 		if got != maxDelay {
 			t.Errorf("attempt %d: delay = %s, want the %s cap", attempt, got, maxDelay)
 		}
+	}
+}
+
+// Retry-After wins over the exponential schedule, but a server is free to
+// suggest an hour; honoring that verbatim would park the CLI on a single 429.
+func TestRetryDelayClampsOversizedRetryAfter(t *testing.T) {
+	const maxDelay = 30 * time.Second
+	cases := []struct {
+		form  string
+		value string
+	}{
+		{"delta-seconds", "3600"},
+		{"http-date", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)},
+	}
+	for _, tt := range cases {
+		t.Run(tt.form, func(t *testing.T) {
+			resp := &Response{Header: http.Header{"Retry-After": []string{tt.value}}}
+			if got := retryDelay(resp, 1); got != maxDelay {
+				t.Errorf("delay = %s, want the %s cap", got, maxDelay)
+			}
+		})
 	}
 }
