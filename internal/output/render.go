@@ -4,10 +4,12 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/itchyny/gojq"
 
@@ -16,11 +18,12 @@ import (
 
 // Options come from global flags.
 type Options struct {
-	Format string   // json (default) | table | ndjson
-	JQ     string   // gojq expression applied to the normalized envelope
-	Raw    bool     // with JQ: print string results without JSON quotes (jq -r)
-	Fields []string // project these fields from data items
-	Pretty bool     // pretty-print JSON (default true)
+	Format string    // json (default) | table | ndjson
+	JQ     string    // gojq expression applied to the normalized envelope
+	Raw    bool      // with JQ: print string results without JSON quotes (jq -r)
+	Fields []string  // project these fields from data items
+	Pretty bool      // pretty-print JSON (default true)
+	Warn   io.Writer // non-fatal diagnostics (stderr); nil silences them
 }
 
 // Render writes the normalized envelope to w according to opts. When both
@@ -30,10 +33,18 @@ func Render(w io.Writer, n envelope.Normalized, opts Options) error {
 		return renderJQ(w, n, opts.JQ, opts.Raw)
 	}
 	if len(opts.Fields) > 0 {
+		var unmatched []string
 		var err error
-		n, err = projectFields(n, opts.Fields)
+		n, unmatched, err = projectFields(n, opts.Fields)
 		if err != nil {
 			return err
+		}
+		// Empty objects are indistinguishable from "the API returned records
+		// with no data", and a wrong field name is the likeliest --fields
+		// mistake. Warn rather than fail: the request already happened, and a
+		// projection typo must not discard a completed mutation's response.
+		if len(unmatched) > 0 && opts.Warn != nil {
+			fmt.Fprintf(opts.Warn, "warning: --fields matched no data: %s\n", strings.Join(unmatched, ", "))
 		}
 	}
 	switch opts.Format {
@@ -86,6 +97,10 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 	if err := json.Unmarshal(encoded, &input); err != nil {
 		return err
 	}
+	// Buffer until the iterator finishes: writing incrementally left the
+	// results produced before a mid-expression error on stdout next to the
+	// error on stderr, so "stdout carries data only" stopped holding.
+	var buf bytes.Buffer
 	iter := query.Run(input)
 	for {
 		v, ok := iter.Next()
@@ -96,30 +111,63 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 			return fmt.Errorf("--jq: %w", err)
 		}
 		if s, isString := v.(string); raw && isString {
-			if _, err := fmt.Fprintln(w, s); err != nil {
-				return err
-			}
+			// --raw prints the string unquoted, so control bytes from the API
+			// would reach the terminal verbatim.
+			fmt.Fprintln(&buf, sanitizeText(s))
 			continue
 		}
 		line, err := gojq.Marshal(v)
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
-			return err
-		}
+		fmt.Fprintf(&buf, "%s\n", line)
 	}
-	return nil
+	_, err = w.Write(buf.Bytes())
+	return err
+}
+
+// sanitizeText strips terminal control characters from server-supplied text.
+// Table cells and --jq --raw print strings verbatim, and some of those
+// strings are attacker-influenced — a candidate's name arrives through a
+// public job application — so an embedded ESC sequence could erase lines,
+// hide a row, or rewrite the window title of whoever reads the output.
+// JSON output is unaffected: encoding/json escapes control bytes already.
+func sanitizeText(s string) string {
+	if !strings.ContainsFunc(s, isTerminalControl) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isTerminalControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isTerminalControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 // projectFields keeps only the named fields on each data item (or on the
-// single data object).
-func projectFields(n envelope.Normalized, fields []string) (envelope.Normalized, error) {
+// single data object). unmatched lists the requested fields that appeared on
+// no item at all — almost always a wrong field name for the endpoint.
+func projectFields(n envelope.Normalized, fields []string) (_ envelope.Normalized, unmatched []string, _ error) {
+	hit := make(map[string]bool, len(fields))
 	keep := func(item map[string]json.RawMessage) map[string]json.RawMessage {
 		out := make(map[string]json.RawMessage, len(fields))
 		for _, f := range fields {
 			if v, ok := item[f]; ok {
 				out[f] = v
+				hit[f] = true
+			}
+		}
+		return out
+	}
+	missed := func() []string {
+		var out []string
+		for _, f := range fields {
+			if !hit[f] {
+				out = append(out, f)
 			}
 		}
 		return out
@@ -133,20 +181,20 @@ func projectFields(n envelope.Normalized, fields []string) (envelope.Normalized,
 		}
 		data, err := json.Marshal(projected)
 		if err != nil {
-			return n, err
+			return n, nil, err
 		}
-		return envelope.Normalized{Data: data, Meta: n.Meta}, nil
+		return envelope.Normalized{Data: data, Meta: n.Meta}, missed(), nil
 	}
 
 	var single map[string]json.RawMessage
 	if err := json.Unmarshal(n.Data, &single); err == nil {
 		data, err := json.Marshal(keep(single))
 		if err != nil {
-			return n, err
+			return n, nil, err
 		}
-		return envelope.Normalized{Data: data, Meta: n.Meta}, nil
+		return envelope.Normalized{Data: data, Meta: n.Meta}, missed(), nil
 	}
-	return n, nil // scalar/null data: nothing to project
+	return n, nil, nil // scalar/null data: nothing to project
 }
 
 // renderTable prints a minimal aligned table of top-level scalar fields —
@@ -182,7 +230,12 @@ func renderTable(w io.Writer, n envelope.Normalized) error {
 		return err
 	}
 
-	if err := writeRow(cols); err != nil {
+	// Column names are API-supplied too (custom fields carry user-set keys).
+	headers := make([]string, len(cols))
+	for i, c := range cols {
+		headers[i] = sanitizeText(c)
+	}
+	if err := writeRow(headers); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -228,13 +281,13 @@ func formatCell(v any) string {
 	case nil:
 		return ""
 	case string:
-		return x
+		return sanitizeText(x)
 	case float64:
 		if x == float64(int64(x)) {
 			return fmt.Sprintf("%d", int64(x))
 		}
 		return fmt.Sprintf("%g", x)
 	default:
-		return fmt.Sprintf("%v", x)
+		return sanitizeText(fmt.Sprintf("%v", x))
 	}
 }
