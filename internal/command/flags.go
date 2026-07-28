@@ -309,11 +309,27 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 		f, ok := fieldByName[name]
 		return ok && f.Type == registry.TypeFile
 	}
-	toFieldValue := func(name, v string) httpx.FieldValue {
+	// @path is expanded only for a value the operator typed on the file flag
+	// itself. --input and --set carry data an agent may have assembled from
+	// content it did not author (a candidate's application, a webhook payload),
+	// and expanding @ there turns any such field into an arbitrary local file
+	// read — including the CLI's own config file.
+	fileRefValue := func(name, v string) httpx.FieldValue {
 		if path, ok := strings.CutPrefix(v, "@"); ok && isFileField(name) {
 			return httpx.FieldValue{Name: name, Value: path, IsFile: true}
 		}
 		return httpx.FieldValue{Name: name, Value: v}
+	}
+	// Data-channel values keep the literal string; a bare @ on a file field is
+	// almost certainly an attempt to upload a file, so say so rather than
+	// silently storing "@/etc/passwd" as the document's text.
+	dataValue := func(channel, name, v string) (httpx.FieldValue, error) {
+		if strings.HasPrefix(v, "@") && isFileField(name) {
+			return httpx.FieldValue{}, usageErr(
+				"%s field %q: file references (@path) are only accepted from the --%s flag; pass the file with --%s @path",
+				channel, name, fieldByName[name].Flag, fieldByName[name].Flag)
+		}
+		return httpx.FieldValue{Name: name, Value: v}, nil
 	}
 
 	values := map[string][]httpx.FieldValue{}
@@ -349,7 +365,11 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 					if err != nil {
 						return nil, nil, usageErr("--input field %q: %v", k, err)
 					}
-					fvs = append(fvs, toFieldValue(k, s))
+					fv, err := dataValue("--input", k, s)
+					if err != nil {
+						return nil, nil, err
+					}
+					fvs = append(fvs, fv)
 				}
 				setField(k, fvs...)
 			case map[string]any:
@@ -359,7 +379,11 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 				if err != nil {
 					return nil, nil, usageErr("--input field %q: %v", k, err)
 				}
-				setField(k, toFieldValue(k, s))
+				fv, err := dataValue("--input", k, s)
+				if err != nil {
+					return nil, nil, err
+				}
+				setField(k, fv)
 			}
 		}
 	}
@@ -374,7 +398,10 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 			raw, _ := cmd.Flags().GetStringArray(f.Flag)
 			fvs := make([]httpx.FieldValue, 0, len(raw))
 			for _, v := range raw {
-				fvs = append(fvs, toFieldValue(f.Name, v))
+				if err := validateEnum(f.Enum, v, f.Flag); err != nil {
+					return nil, nil, err
+				}
+				fvs = append(fvs, fileRefValue(f.Name, v))
 			}
 			setField(f.Name, fvs...)
 			continue
@@ -384,7 +411,7 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 			v, _ := cmd.Flags().GetString(f.Flag)
 			// Non-@ values pass through: the document field also accepts
 			// base64/data-URI strings.
-			setField(f.Name, toFieldValue(f.Name, v))
+			setField(f.Name, fileRefValue(f.Name, v))
 		default:
 			v, err := flagValueString(cmd, f.Flag, f.Type)
 			if err != nil {
@@ -397,7 +424,11 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 		}
 	}
 
-	// 3) --set.
+	// 3) --set. Repeating a key appends rather than replaces: repeating is how
+	// a bracket-array multipart field expresses a list, and --set is the only
+	// route to fields that have no typed flag. The first --set for a key still
+	// overrides whatever --input or a flag put there.
+	setSeen := map[string]bool{}
 	for _, s := range setArgs {
 		key, value, isJSON, err := splitSet(s)
 		if err != nil {
@@ -406,7 +437,16 @@ func buildMultipartFields(cmd *cobra.Command, op *registry.Op, inputArg string, 
 		if isJSON {
 			return nil, nil, usageErr("--set %s: JSON values are not supported for multipart operations", key)
 		}
-		setField(key, toFieldValue(key, value))
+		fv, err := dataValue("--set", key, value)
+		if err != nil {
+			return nil, nil, err
+		}
+		if setSeen[key] {
+			values[key] = append(values[key], fv)
+			continue
+		}
+		setSeen[key] = true
+		setField(key, fv)
 	}
 
 	var fields []httpx.FieldValue
@@ -476,7 +516,11 @@ func splitSet(s string) (key, value string, isJSON bool, err error) {
 	}
 	key, value = s[:eq], s[eq+1:]
 	if strings.HasSuffix(key, ":") {
-		return strings.TrimSuffix(key, ":"), value, true, nil
+		key = strings.TrimSuffix(key, ":")
+		if key == "" { // ":=1" slipped past the eq<=0 guard and named a field ""
+			return "", "", false, usageErr("--set expects key=value or key:=json, got %q", s)
+		}
+		return key, value, true, nil
 	}
 	return key, value, false, nil
 }
