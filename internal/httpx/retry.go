@@ -43,7 +43,14 @@ func retryDelay(resp *Response, attempt int) time.Duration {
 			}
 		}
 	}
-	return clampDelay(time.Duration(math.Pow(2, float64(attempt-1)))*time.Second, maxDelay)
+	// Cap in seconds before converting: time.Duration(math.Pow(2, 34))*Second
+	// overflows int64 and wraps negative, which clamped to a 0s delay and
+	// turned --max-retries 50 into a tight loop against the endpoint.
+	secs := math.Pow(2, float64(attempt-1))
+	if secs >= maxDelay.Seconds() {
+		return maxDelay
+	}
+	return clampDelay(time.Duration(secs*float64(time.Second)), maxDelay)
 }
 
 func clampDelay(d, max time.Duration) time.Duration {

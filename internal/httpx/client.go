@@ -18,6 +18,13 @@ import (
 // DefaultBaseURL is the public API server from the OpenAPI spec.
 const DefaultBaseURL = "https://app.peopleforce.io/api/public/v3"
 
+// authHeader carries the API key. It is not one of the headers net/http
+// strips on a cross-origin redirect, so dropCredentialsCrossHost does it.
+const authHeader = "X-API-KEY"
+
+// maxResponseBytes caps a single response body held in memory.
+const maxResponseBytes int64 = 256 << 20
+
 // Client executes API requests.
 type Client struct {
 	BaseURL    string
@@ -94,9 +101,25 @@ func (c *Client) httpClient() *http.Client {
 		if timeout == 0 {
 			timeout = 30 * time.Second
 		}
-		c.httpCached = &http.Client{Timeout: timeout}
+		c.httpCached = &http.Client{Timeout: timeout, CheckRedirect: dropCredentialsCrossHost}
 	})
 	return c.httpCached
+}
+
+// dropCredentialsCrossHost strips the API key when a redirect leaves the
+// origin the request was aimed at. net/http does this automatically for
+// Authorization and Cookie, but the PeopleForce credential travels in a
+// custom header, so an open redirect on the API host — or any on-path
+// attacker when the base URL is http:// — would otherwise hand a full-scope
+// HR token to whatever host the redirect names.
+func dropCredentialsCrossHost(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
+		req.Header.Del(authHeader)
+	}
+	return nil
 }
 
 func (c *Client) logf(format string, args ...any) {
@@ -134,7 +157,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 			return nil, err
 		}
 		// net/http keeps RawQuery byte-for-byte, so bracket keys survive.
-		httpReq.Header.Set("X-API-KEY", c.APIKey)
+		httpReq.Header.Set(authHeader, c.APIKey)
 		httpReq.Header.Set("Accept", "application/json")
 		if c.UserAgent != "" {
 			httpReq.Header.Set("User-Agent", c.UserAgent)
@@ -148,10 +171,16 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		if err != nil {
 			return nil, &TransportError{Err: err}
 		}
-		respBody, readErr := io.ReadAll(httpResp.Body)
+		// Bounded: an unbounded ReadAll lets a hostile or misconfigured
+		// endpoint stream until the CLI is OOM-killed. No PeopleForce list
+		// page comes close to this.
+		respBody, readErr := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBytes+1))
 		httpResp.Body.Close()
 		if readErr != nil {
 			return nil, &TransportError{Err: readErr}
+		}
+		if int64(len(respBody)) > maxResponseBytes {
+			return nil, &TransportError{Err: fmt.Errorf("response exceeds the %d MiB limit", maxResponseBytes>>20)}
 		}
 
 		lastResp = &Response{Status: httpResp.StatusCode, Header: httpResp.Header, Body: respBody}
