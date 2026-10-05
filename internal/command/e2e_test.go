@@ -488,9 +488,55 @@ func TestTruncatedSuccessBodyExitCode(t *testing.T) {
 	if _, _, code := runCLI(t, srv.URL, "employees", "get", "1"); code != ExitNetwork {
 		t.Errorf("GET 200: exit = %d, want %d", code, ExitNetwork)
 	}
-	status = "500 Internal Server Error"
-	if _, _, code := runCLI(t, srv.URL, "departments", "create", "--set", "name=Eng"); code != ExitNetwork {
-		t.Errorf("POST 500: exit = %d, want %d", code, ExitNetwork)
+	// A cut-off non-2xx keeps its status: the intact 500 exits 7 and Do never
+	// retries a POST 5xx, so "network, safe to retry" would contradict it.
+	for st, want := range map[string]int{
+		"500 Internal Server Error": ExitServer,
+		"429 Too Many Requests":     ExitRateLimit,
+		"404 Not Found":             ExitNotFound,
+	} {
+		status = st
+		if _, stderr, code := runCLI(t, srv.URL, "departments", "create", "--set", "name=Eng"); code != want {
+			t.Errorf("POST %s cut off: exit = %d, want %d; stderr: %s", st, code, want, stderr)
+		} else if !strings.Contains(stderr, "unexpected EOF") {
+			t.Errorf("POST %s: the original read error should stay in the message: %s", st, stderr)
+		}
+	}
+}
+
+// A render failure after a read says nothing was changed: the filter does not
+// fit the data, so exit 2 (as for meta commands), never 9, which tells an
+// agent not to re-run. Mutations keep 9.
+func TestReadRenderFailureIsUsageExit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":1,"email":"a@x"}],"meta":{"page":1,"pages":1}}`)
+	}))
+	defer srv.Close()
+
+	for _, args := range [][]string{
+		{"employees", "list", "--jq", ".data.email"},
+		{"employees", "list", "--all", "--jq", ".data.email"},
+		{"api", "call", "GET", "/employees", "--jq", ".data.email"},
+	} {
+		stdout, stderr, code := runCLI(t, srv.URL, args...)
+		if code != ExitUsage {
+			t.Errorf("%v: exit = %d, want %d; stderr: %s", args, code, ExitUsage, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("%v: stdout = %q, want empty", args, stdout)
+		}
+	}
+	_, _, code := runCLI(t, srv.URL, "api", "call", "POST", "/employees", "--set", "a=1", "--jq", ".data.email")
+	if code != ExitOutput {
+		t.Errorf("POST render failure: exit = %d, want %d", code, ExitOutput)
+	}
+}
+
+func TestIsReadMethod(t *testing.T) {
+	for m, want := range map[string]bool{"GET": true, "HEAD": true, "POST": false, "PUT": false, "PATCH": false, "DELETE": false} {
+		if got := isReadMethod(m); got != want {
+			t.Errorf("isReadMethod(%q) = %v, want %v", m, got, want)
+		}
 	}
 }
 

@@ -270,7 +270,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			meta["truncated"] = true
 			meta["next_page"] = nextPage
 		}
-		return renderNormalized(app, envelope.Normalized{Data: data, Meta: meta})
+		return renderNormalized(app, op.Method, envelope.Normalized{Data: data, Meta: meta})
 	}
 
 	// A run that dies on page N still hands over the N-1 pages already
@@ -329,7 +329,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		if !bytes.HasPrefix(bytes.TrimSpace(n.Data), []byte("[")) || json.Unmarshal(n.Data, &items) != nil {
 			if pagesFetched == 0 {
 				// Not a list at all — --all degrades to a single fetch.
-				return renderNormalized(app, n)
+				return renderNormalized(app, op.Method, n)
 			}
 			what := "data is not a JSON array"
 			switch {
@@ -431,7 +431,7 @@ func renderResponse(app *App, method string, resp *httpx.Response) error {
 	if n.NotJSON {
 		return unusableBodyErr(method, resp)
 	}
-	return renderNormalized(app, n)
+	return renderNormalized(app, method, n)
 }
 
 // unusableBodyErr reports a 2xx whose non-empty body is not JSON. Rendering it
@@ -449,15 +449,31 @@ func unusableBodyErr(method string, resp *httpx.Response) *ExitError {
 		excerpt = excerpt[:cut]
 	}
 	msg := fmt.Sprintf("the API answered HTTP %d but the body is not JSON (starts with %q)", resp.Status, string(excerpt))
-	if method == "GET" || method == "HEAD" {
+	if isReadMethod(method) {
 		return &ExitError{Code: ExitServer, Type: "server", Status: resp.Status, Message: msg}
 	}
 	return &ExitError{Code: ExitOutput, Type: "output", Status: resp.Status,
 		Message: msg + "; the request may have taken effect, so do not blindly re-run it"}
 }
 
-func renderNormalized(app *App, n envelope.Normalized) error {
+// isReadMethod reports whether a request with this method leaves the server
+// unchanged, so that whatever goes wrong after its status line arrived is safe
+// to retry. Every place that decides between "re-run it" and "a write may have
+// happened" asks this one function, so they cannot drift apart.
+func isReadMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+func renderNormalized(app *App, method string, n envelope.Normalized) error {
 	if err := output.Render(app.Stdout, n, app.outputOptions()); err != nil {
+		if isReadMethod(method) {
+			// Nothing was changed on the server, so this is a usage problem:
+			// the --jq/--fields projection does not fit the data, or stdout
+			// failed. Re-running the read is safe; exit 9 would tell an agent
+			// otherwise.
+			return &ExitError{Code: ExitUsage, Type: "usage",
+				Message: fmt.Sprintf("the response could not be rendered (the filter does not fit the data, or stdout failed; re-running the read is safe): %v", err)}
+		}
 		// Not ExitUsage: the request was issued and may have mutated state,
 		// so reporting "bad flags/args" would tell an agent it is safe to
 		// re-run — and re-running duplicates the created resource.
@@ -526,12 +542,23 @@ func wrapTransport(err error) error {
 	// The server sent a status line but the body could not be read. After a
 	// 2xx to a mutation the write has already happened, so exit 8 ("network,
 	// safe to retry") would invite a duplicate; exit 9 says not to re-run.
-	// A GET/HEAD or a non-2xx stays a retryable network failure.
+	// A 2xx to a read stays a retryable network failure.
 	var rre *httpx.ResponseReadError
-	if errors.As(err, &rre) && rre.Status >= 200 && rre.Status <= 299 &&
-		rre.Method != http.MethodGet && rre.Method != http.MethodHead {
-		return &ExitError{Code: ExitOutput, Type: "output",
-			Message: fmt.Sprintf("the API accepted the request (HTTP %d) but its response could not be read: %v — do not blindly re-run; check whether the change was applied", rre.Status, rre.Err)}
+	if errors.As(err, &rre) {
+		if rre.Status >= 200 && rre.Status <= 299 {
+			if !isReadMethod(rre.Method) {
+				return &ExitError{Code: ExitOutput, Type: "output", Status: rre.Status,
+					Message: fmt.Sprintf("the API accepted the request (HTTP %d) but its response could not be read: %v — do not blindly re-run; check whether the change was applied", rre.Status, rre.Err)}
+			}
+		} else {
+			// A non-2xx whose body was cut off is still that status: the
+			// intact response would have exited 6/7/..., and Do never retries
+			// a POST 5xx, so calling it "network" would make it look safe to
+			// retry.
+			ee := classifyStatus(rre.Status, nil)
+			ee.Message = fmt.Sprintf("%s; its body could not be read: %v", ee.Message, rre.Err)
+			return ee
+		}
 	}
 	return &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
 }

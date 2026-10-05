@@ -23,14 +23,14 @@ const (
 	ExitRateLimit  = 6 // 429 after retries exhausted
 	ExitServer     = 7 // 5xx
 	ExitNetwork    = 8 // DNS/TLS/timeout/connection failures
-	ExitOutput     = 9 // request succeeded; rendering the response failed
+	ExitOutput     = 9 // a write may have happened: its 2xx answer could not be read or rendered
 )
 
 // ExitError carries the process exit code plus a structured, machine-readable
 // error for stderr.
 type ExitError struct {
 	Code    int             `json:"-"`
-	Type    string          `json:"type"`             // auth|not_found|validation|rate_limit|server|network|usage|api
+	Type    string          `json:"type"`             // auth|not_found|validation|rate_limit|server|network|usage|api|output
 	Status  int             `json:"status,omitempty"` // HTTP status when applicable
 	Message string          `json:"message"`
 	Detail  json.RawMessage `json:"detail,omitempty"` // raw API response body when it was JSON
