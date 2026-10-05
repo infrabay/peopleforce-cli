@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "peopleforce-cli",
+  "description": "The PeopleForce CLI skill for Claude Code",
+  "owner": {
+    "name": "infrabay",
+    "url": "https://github.com/infrabay"
+  },
+  "plugins": [
+    {
+      "name": "peopleforce",
+      "source": "./",
+      "description": "Teaches Claude to query and manage PeopleForce HR data (employees, leave, tasks, teams, org structure, recruitment) through the peopleforce CLI"
+    }
+  ]
+}

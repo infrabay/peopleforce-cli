@@ -147,12 +147,38 @@ Team membership is read from `teams list`: the upstream API has no
 response is the only source. `team_lead` sits outside `team_members`, so
 collect both to get everyone.
 
-### Agent onboarding
+### Agent skill
+
+The repository ships an [Agent Skill](https://agentskills.io)
+([`skills/peopleforce/SKILL.md`](skills/peopleforce/SKILL.md)) that teaches a
+coding agent the auth flow, the output contract, exit codes and common
+recipes. Install it the way your agent prefers.
+
+Claude Code, as a plugin that stays up to date:
+
+```text
+/plugin marketplace add infrabay/peopleforce-cli
+/plugin install peopleforce@peopleforce-cli
+```
+
+Codex, Cursor, Gemini CLI, GitHub Copilot and other agents that read Agent
+Skills, with the [`skills`](https://github.com/vercel-labs/skills) installer:
 
 ```bash
-peopleforce skill install     # writes .claude/skills/peopleforce/SKILL.md
-peopleforce agents-md         # prints an AGENTS.md snippet
+npx skills add infrabay/peopleforce-cli
 ```
+
+Or from the installed binary, which writes the copy matching its own version:
+
+```bash
+peopleforce skill install                  # .claude/skills/peopleforce/ in this project
+peopleforce skill install --agent codex    # .agents/skills/peopleforce/ (Codex and others)
+peopleforce skill install --global         # under your home directory instead
+peopleforce agents-md                      # prints an AGENTS.md snippet
+```
+
+The skill only describes the CLI; the `peopleforce` binary itself still has
+to be [installed](#install).
 
 ## Writing data
 

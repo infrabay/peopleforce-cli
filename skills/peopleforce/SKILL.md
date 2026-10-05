@@ -8,6 +8,21 @@ description: Query and manage PeopleForce HR data (employees, leave requests, ta
 `peopleforce` is a command-line client for the PeopleForce HR API, built for
 non-interactive use by agents.
 
+## Setup
+
+If `peopleforce` is not on PATH, it has to be installed first — ask the user
+before installing software:
+
+```bash
+brew install infrabay/tap/peopleforce                                  # macOS, Linux
+go install github.com/infrabay/peopleforce-cli/cmd/peopleforce@latest  # any OS with Go
+```
+
+Prebuilt binaries for Linux, macOS and Windows are on
+https://github.com/infrabay/peopleforce-cli/releases. This skill may be
+newer or older than the installed binary: `peopleforce commands` describes
+exactly what the installed version supports.
+
 ## Auth
 
 Requires an API token in `PEOPLEFORCE_API_KEY` (or a config-file profile).

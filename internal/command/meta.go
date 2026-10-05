@@ -234,15 +234,39 @@ func dumpCommand(c *cobra.Command, path string) commandInfo {
 
 func newSkillCommand(app *App) *cobra.Command {
 	var global bool
+	var agent string
 	skill := newGroup("skill", "Agent onboarding files")
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Install a Claude Code skill describing this CLI",
-		Long: `Writes SKILL.md into .claude/skills/peopleforce/ (project-local by default,
-~/.claude/skills/peopleforce/ with --global) so Claude Code discovers how to
-drive this CLI: auth, output contract, exit codes, and common recipes.`,
+		Short: "Install the Agent Skill describing this CLI",
+		Long: `Writes the peopleforce Agent Skill (SKILL.md) where a coding agent discovers
+it, so the agent knows how to drive this CLI: auth, output contract, exit
+codes, and common recipes. The skill matches this binary's version.
+
+  --agent claude   .claude/skills/peopleforce/   (Claude Code; the default)
+  --agent codex    .agents/skills/peopleforce/   (Codex and other tools that
+                                                  read the shared .agents dir)
+  --agent all      both
+
+The directory is relative to the current project, or to your home directory
+with --global.
+
+To install the skill without this binary, see the README: Claude Code users
+can add it as a plugin, and ` + "`npx skills add infrabay/peopleforce-cli`" + `
+installs it for most other agents.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var targets [][]string
+			switch agent {
+			case "claude":
+				targets = [][]string{{".claude", "skills", "peopleforce"}}
+			case "codex":
+				targets = [][]string{{".agents", "skills", "peopleforce"}}
+			case "all":
+				targets = [][]string{{".claude", "skills", "peopleforce"}, {".agents", "skills", "peopleforce"}}
+			default:
+				return usageErr("--agent must be claude, codex or all, not %q", agent)
+			}
 			anchor := "."
 			if global {
 				home, err := os.UserHomeDir()
@@ -251,31 +275,49 @@ drive this CLI: auth, output contract, exit codes, and common recipes.`,
 				}
 				anchor = home
 			}
-			dest, err := installSkill(anchor)
-			if err != nil {
-				return err
+			for _, sub := range targets {
+				// Only a project directory can come from someone else's
+				// repository. The home directory is the user's own, and
+				// tools such as `npx skills` routinely make ~/.claude/skills
+				// a symlink to ~/.agents/skills, so --global follows links.
+				dest, err := installSkill(anchor, sub, !global)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(app.Stderr, "installed %s\n", dest)
 			}
-			fmt.Fprintf(app.Stderr, "installed %s\n", dest)
 			return nil
 		},
 	}
-	install.Flags().BoolVar(&global, "global", false, "install to ~/.claude/skills instead of the current project")
+	install.Flags().BoolVar(&global, "global", false, "install under your home directory instead of the current project")
+	install.Flags().StringVar(&agent, "agent", "claude", "which agent to install for: claude, codex or all")
 	skill.AddCommand(install)
 	return skill
 }
 
-// installSkill writes SKILL.md to <anchor>/.claude/skills/peopleforce/,
-// creating the directories it needs.
+// installSkill writes SKILL.md to <anchor>/<sub...>/, creating the
+// directories it needs.
 //
-// The path below the anchor is fixed, and a cloned repo can carry a symlink at
-// any step of it: .claude/skills/peopleforce -> ~/.config/fish, or SKILL.md ->
-// ~/.zshrc. Following one would let the repo pick the file this overwrites, so
-// every component is Lstat'ed and a symlink is refused rather than traversed.
-// On unix the final open also carries O_NOFOLLOW, closing the window between
-// that check and the open.
-func installSkill(anchor string) (string, error) {
-	dir := anchor
-	for _, part := range []string{".claude", "skills", "peopleforce"} {
+// In a project (strict), the path below the anchor is fixed and a cloned
+// repo can carry a symlink at any step of it: .claude/skills/peopleforce ->
+// ~/.config/fish, or SKILL.md -> ~/.zshrc. Following one would let the repo
+// pick the file this overwrites, so every component is Lstat'ed and a symlink
+// is refused rather than traversed. On unix the final open also carries
+// O_NOFOLLOW, closing the window between that check and the open.
+func installSkill(anchor string, sub []string, strict bool) (string, error) {
+	dir := filepath.Join(append([]string{anchor}, sub...)...)
+	if !strict {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		dest := filepath.Join(dir, "SKILL.md")
+		if err := os.WriteFile(dest, []byte(agentdocs.SkillMD), 0o644); err != nil {
+			return "", err
+		}
+		return dest, nil
+	}
+	dir = anchor
+	for _, part := range sub {
 		dir = filepath.Join(dir, part)
 		fi, err := os.Lstat(dir)
 		switch {

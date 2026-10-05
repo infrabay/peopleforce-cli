@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "peopleforce",
+  "description": "Teaches Claude to query and manage PeopleForce HR data (employees, leave, tasks, teams, org structure, recruitment) through the peopleforce CLI",
+  "author": {
+    "name": "infrabay",
+    "url": "https://github.com/infrabay"
+  },
+  "homepage": "https://github.com/infrabay/peopleforce-cli",
+  "repository": "https://github.com/infrabay/peopleforce-cli",
+  "license": "MIT",
+  "keywords": ["peopleforce", "hr", "cli"]
+}
