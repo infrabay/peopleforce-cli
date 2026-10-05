@@ -1,0 +1,15 @@
+version: "2"
+
+linters:
+  exclusions:
+    # Unchecked Close/Remove/Fprint* calls: diagnostics written to stderr and
+    # cleanup on an error path, where there is nothing better to do with a
+    # second error.
+    presets:
+      - std-error-handling
+    rules:
+      # httptest handlers and fixtures write to recorders that cannot fail in
+      # a way the test cares about.
+      - path: _test\.go
+        linters:
+          - errcheck

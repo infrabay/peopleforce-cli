@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -24,6 +25,27 @@ var (
 	Version = "dev"
 	Commit  = "unknown"
 )
+
+// `go install github.com/infrabay/peopleforce-cli/cmd/peopleforce@vX.Y.Z`
+// passes no -ldflags, so without this fallback such a build would report
+// "dev" in `version` and in the User-Agent. The module version and VCS
+// revision the Go toolchain embeds are the next best source.
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if Version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		Version = info.Main.Version
+	}
+	if Commit == "unknown" {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && len(s.Value) >= 7 {
+				Commit = s.Value[:7]
+			}
+		}
+	}
+}
 
 // App holds global flag state shared by all commands.
 type App struct {
@@ -261,7 +283,7 @@ func (a *App) confirmDestructive(what string) error {
 	}
 	fmt.Fprintf(a.Stderr, "About to run %s. Type 'yes' to confirm: ", what)
 	var answer string
-	fmt.Fscanln(os.Stdin, &answer)
+	_, _ = fmt.Fscanln(os.Stdin, &answer) // an unreadable answer stays "" and aborts below
 	if strings.TrimSpace(answer) != "yes" {
 		return usageErr("aborted by user")
 	}
