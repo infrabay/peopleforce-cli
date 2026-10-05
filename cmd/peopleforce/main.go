@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/3bagels/peopleforce-cli/internal/command"
+	"github.com/infrabay/peopleforce-cli/internal/command"
 )
 
 func main() {

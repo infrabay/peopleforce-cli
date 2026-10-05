@@ -30,9 +30,9 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	UserAgent  string
-	MaxRetries int           // bounded retries on 429/502/503/504
-	HTTP       *http.Client  // if nil, a client with Timeout is used
-	Timeout    time.Duration // used when HTTP is nil (default 30s)
+	MaxRetries int                              // bounded retries on 429/502/503/504
+	HTTP       *http.Client                     // if nil, a client with Timeout is used
+	Timeout    time.Duration                    // used when HTTP is nil (default 30s)
 	Logf       func(format string, args ...any) // optional stderr logging (--verbose, retry notices)
 
 	httpOnce   sync.Once

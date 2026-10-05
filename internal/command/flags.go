@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/3bagels/peopleforce-cli/internal/httpx"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // registerQueryFlags declares one typed flag per query parameter.

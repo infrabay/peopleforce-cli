@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3bagels/peopleforce-cli/internal/agentdocs"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/agentdocs"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 func TestSkillInstallWritesEmbeddedSkill(t *testing.T) {

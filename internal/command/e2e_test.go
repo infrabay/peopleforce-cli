@@ -101,8 +101,10 @@ func TestAllPaginationLoops(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, stderr)
 	}
 	var envelope struct {
-		Data []struct{ ID int `json:"id"` } `json:"data"`
-		Meta map[string]any                 `json:"meta"`
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
+		Meta map[string]any `json:"meta"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
 		t.Fatal(err)

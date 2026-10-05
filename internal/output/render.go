@@ -14,7 +14,7 @@ import (
 
 	"github.com/itchyny/gojq"
 
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
 )
 
 // Formats lists the accepted --output values, in the order they are offered to

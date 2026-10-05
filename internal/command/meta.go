@@ -12,12 +12,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/3bagels/peopleforce-cli/internal/agentdocs"
-	"github.com/3bagels/peopleforce-cli/internal/config"
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
-	"github.com/3bagels/peopleforce-cli/internal/httpx"
-	"github.com/3bagels/peopleforce-cli/internal/output"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/agentdocs"
+	"github.com/infrabay/peopleforce-cli/internal/config"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/output"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // renderValue emits a meta-command payload through the same output pipeline

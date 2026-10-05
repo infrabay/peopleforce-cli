@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3bagels/peopleforce-cli/internal/config"
+	"github.com/infrabay/peopleforce-cli/internal/config"
 )
 
 // runWithStdin executes the command tree the way main() does, with a supplied

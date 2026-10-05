@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
 )
 
 func norm(data string, meta map[string]any) envelope.Normalized {

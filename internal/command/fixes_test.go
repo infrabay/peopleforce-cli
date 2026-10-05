@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3bagels/peopleforce-cli/internal/config"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/config"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // Regression tests for the confirmed review findings.
@@ -446,7 +446,9 @@ func TestAllPagesUntilEmptyWhenMetadataMissing(t *testing.T) {
 		t.Errorf("expected 3 requests (page until empty), got %d", calls)
 	}
 	var env struct {
-		Data []struct{ ID int `json:"id"` } `json:"data"`
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatal(err)
@@ -476,7 +478,9 @@ func TestAllStopsWhenEndpointIgnoresPageParam(t *testing.T) {
 		t.Errorf("expected 3 requests (confirm replay twice), got %d", calls)
 	}
 	var env struct {
-		Data []struct{ ID int `json:"id"` } `json:"data"`
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatal(err)
@@ -516,7 +520,9 @@ func TestAllKeepsCoincidentallyIdenticalPage(t *testing.T) {
 		t.Errorf("expected 4 requests, got %d", calls)
 	}
 	var env struct {
-		Data []struct{ ID int `json:"id"` } `json:"data"`
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatal(err)
@@ -547,7 +553,9 @@ func TestAllFlushesHeldPageOnEmptyPage(t *testing.T) {
 		t.Fatalf("exit = %d", code)
 	}
 	var env struct {
-		Data []struct{ ID int `json:"id"` } `json:"data"`
+		Data []struct {
+			ID int `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
 		t.Fatal(err)

@@ -26,8 +26,8 @@ const (
 // error for stderr.
 type ExitError struct {
 	Code    int             `json:"-"`
-	Type    string          `json:"type"`              // auth|not_found|validation|rate_limit|server|network|usage|api
-	Status  int             `json:"status,omitempty"`  // HTTP status when applicable
+	Type    string          `json:"type"`             // auth|not_found|validation|rate_limit|server|network|usage|api
+	Status  int             `json:"status,omitempty"` // HTTP status when applicable
 	Message string          `json:"message"`
 	Detail  json.RawMessage `json:"detail,omitempty"` // raw API response body when it was JSON
 }

@@ -26,7 +26,7 @@ import (
 	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 	"gopkg.in/yaml.v3"
 
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 type overridesFile struct {

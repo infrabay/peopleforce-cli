@@ -1,4 +1,4 @@
-module github.com/3bagels/peopleforce-cli
+module github.com/infrabay/peopleforce-cli
 
 go 1.26.5
 

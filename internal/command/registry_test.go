@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // The registry is the compiled contract with the spec: every operation

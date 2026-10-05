@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
-	"github.com/3bagels/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
 )
 
 // bulkRecord is one line of bulk-update input.

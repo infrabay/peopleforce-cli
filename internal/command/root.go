@@ -13,10 +13,10 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/3bagels/peopleforce-cli/internal/config"
-	"github.com/3bagels/peopleforce-cli/internal/httpx"
-	"github.com/3bagels/peopleforce-cli/internal/output"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/config"
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/output"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // Version info, injected via -ldflags at build time.

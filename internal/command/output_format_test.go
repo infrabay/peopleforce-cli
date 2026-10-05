@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
-	"github.com/3bagels/peopleforce-cli/internal/output"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/output"
 )
 
 func formatApp(format string) *App {

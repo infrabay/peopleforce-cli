@@ -1,8 +1,8 @@
 SPEC_URL ?= https://dash.readme.com/api/v1/api-registry/i2q3a11mfv5ssl0
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS   = -X github.com/3bagels/peopleforce-cli/internal/command.Version=$(VERSION) \
-            -X github.com/3bagels/peopleforce-cli/internal/command.Commit=$(COMMIT)
+LDFLAGS   = -X github.com/infrabay/peopleforce-cli/internal/command.Version=$(VERSION) \
+            -X github.com/infrabay/peopleforce-cli/internal/command.Commit=$(COMMIT)
 
 .PHONY: build generate check-generated test vet install update-spec clean
 

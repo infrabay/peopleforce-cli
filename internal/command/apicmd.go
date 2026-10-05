@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/3bagels/peopleforce-cli/internal/envelope"
-	"github.com/3bagels/peopleforce-cli/internal/httpx"
-	"github.com/3bagels/peopleforce-cli/internal/output"
-	"github.com/3bagels/peopleforce-cli/internal/registry"
+	"github.com/infrabay/peopleforce-cli/internal/envelope"
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/output"
+	"github.com/infrabay/peopleforce-cli/internal/registry"
 )
 
 // newAPICommand is the escape hatch: every spec operation is reachable here
