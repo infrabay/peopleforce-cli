@@ -17,6 +17,13 @@ import (
 type Normalized struct {
 	Data json.RawMessage `json:"data"`
 	Meta map[string]any  `json:"meta,omitempty"`
+
+	// NotJSON is set when the body was non-empty but not valid JSON (an HTML
+	// error page from a proxy on a 200, say). Data is then null and the text
+	// sits in meta.raw, which is indistinguishable from a legitimately empty
+	// answer for anything reading Data alone — callers that must not mistake
+	// one for the other check this flag instead of sniffing meta.
+	NotJSON bool `json:"-"`
 }
 
 var nullJSON = json.RawMessage("null")
@@ -51,7 +58,7 @@ func Normalize(body []byte, status int) Normalized {
 			return Normalized{Data: json.RawMessage(trimmed), Meta: meta}
 		}
 		meta["raw"] = string(trimmed)
-		return Normalized{Data: nullJSON, Meta: meta}
+		return Normalized{Data: nullJSON, Meta: meta, NotJSON: true}
 	}
 
 	// Shape 5: bulk {records[, errors]}. The errors key is absent when every

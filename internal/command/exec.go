@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -118,12 +119,27 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 			startPage = int(p)
 		}
 	}
+	if op.Paginated {
+		// A cap below 1 used to fetch one page anyway, so "--max-pages 0"
+		// quietly meant "1". Reject it before --dry-run returns, so a preview
+		// never blesses a flag the real run would refuse.
+		if n, _ := cmd.Flags().GetInt("max-pages"); n < 1 {
+			return usageErr("--max-pages must be 1 or greater, got %d", n)
+		}
+	}
+	// previewQuery is what --dry-run shows; it differs from query only for
+	// --all, where the loop adds the page param itself.
+	previewQuery := query
 	if all {
 		// runAllPages supplies its own page param each iteration. Leaving the
 		// operator's --page in the base set would put two page keys in the URL,
 		// and the backend reads the first — pinning every request to the start
 		// page and looping on it forever.
 		query = dropQueryKey(query, "page")
+		// The loop's first request carries the start page, so the preview must
+		// too: without it --all --page 3 --dry-run showed a URL for page 1.
+		previewQuery = append(append([]httpx.QueryPair{}, query...),
+			httpx.QueryPair{Key: "page", Value: strconv.Itoa(startPage)})
 	}
 
 	var bodyBytes []byte
@@ -164,7 +180,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 			if err := checkUploadsReadable(fields); err != nil {
 				return err
 			}
-			return printDryRun(app, op.Method, path, query, dryRunMultipartBody(fields))
+			return printDryRun(app, op.Method, path, previewQuery, dryRunMultipartBody(fields))
 		}
 		bodyBytes, contentType, err = httpx.EncodeMultipart(fields)
 		if err != nil {
@@ -188,7 +204,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 		if len(jsonBody) > 0 {
 			pretty = jsonBody
 		}
-		return printDryRun(app, op.Method, path, query, pretty)
+		return printDryRun(app, op.Method, path, previewQuery, pretty)
 	}
 
 	client, err := app.client()
@@ -206,7 +222,7 @@ func runOp(app *App, op *registry.Op, cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return wrapTransport(err)
 	}
-	return renderResponse(app, resp)
+	return renderResponse(app, op.Method, resp)
 }
 
 // heldDupDropped is reported whenever a held replay page is discarded because
@@ -301,18 +317,28 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		}
 		n := envelope.Normalize(resp.Body, resp.Status)
 
+		if pagesFetched == 0 && n.NotJSON {
+			return unusableBodyErr(op.Method, resp)
+		}
+		// json.Unmarshal accepts null into a slice, so test for an actual
+		// array: a mid-run page whose data is null, empty or HTML is the
+		// endpoint going wrong, never "the list ended" — treating it as the
+		// end made a broken page 2 of 9 exit 0 with no marker.
 		var items []json.RawMessage
-		if err := json.Unmarshal(n.Data, &items); err != nil {
+		if !bytes.HasPrefix(bytes.TrimSpace(n.Data), []byte("[")) || json.Unmarshal(n.Data, &items) != nil {
 			if pagesFetched == 0 {
 				// Not a list at all — --all degrades to a single fetch.
 				return renderNormalized(app, n)
 			}
-			// Mid-run: the endpoint stopped returning arrays. Handing back only
-			// this page would silently drop every page already collected, so
-			// keep them and mark the result incomplete.
-			fmt.Fprintf(app.Stderr, "warning: page %d is not a list; stopping and keeping the %d page(s) already fetched\n", page, pagesFetched)
-			resumeFrom = page
-			break
+			what := "data is not a JSON array"
+			switch {
+			case n.NotJSON:
+				what = "body is not JSON"
+			case len(bytes.TrimSpace(resp.Body)) == 0:
+				what = "body is empty"
+			}
+			return truncate(&ExitError{Code: ExitServer, Type: "server", Status: resp.Status,
+				Message: fmt.Sprintf("page %d returned no list (HTTP %d, %s)", page, resp.Status, what)})
 		}
 		pagesFetched++
 		fmt.Fprintf(app.Stderr, "page %d: %d items\n", page, len(items))
@@ -321,6 +347,14 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 		if !ok && !warnedNoMeta {
 			fmt.Fprintln(app.Stderr, "note: response carries no pagination metadata; paging until an empty page")
 			warnedNoMeta = true
+		}
+
+		// An empty page that itself says more pages follow is a backend
+		// glitch, not the end of the list; ending quietly here would present
+		// the pages so far as everything.
+		if len(items) == 0 && ok && current < pages {
+			return truncate(&ExitError{Code: ExitServer, Type: "server", Status: resp.Status,
+				Message: fmt.Sprintf("page %d is empty but its metadata reports page %d of %d", page, current, pages)})
 		}
 
 		// Replay detection runs whether or not pagination metadata is present:
@@ -333,6 +367,12 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 				fmt.Fprintln(app.Stderr, "warning: consecutive pages replay the first page — the endpoint seems to ignore the page parameter; keeping that page only")
 				pendingDup = nil
 				lastMeta = n.Meta
+				// Metadata that still reports pages beyond the kept ones means
+				// the run did not cover everything; without metadata a backend
+				// that ignores ?page= is returning all it has.
+				if ok && pages >= page-1 {
+					resumeFrom = page - 1 // the held replay was never kept
+				}
 				break
 			}
 			pendingDup = items
@@ -382,12 +422,37 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 	return emit(resumeFrom)
 }
 
-func renderResponse(app *App, resp *httpx.Response) error {
+func renderResponse(app *App, method string, resp *httpx.Response) error {
 	if resp.Status < 200 || resp.Status > 299 {
 		return classifyStatus(resp.Status, resp.Body)
 	}
 	n := envelope.Normalize(resp.Body, resp.Status)
+	if n.NotJSON {
+		return unusableBodyErr(method, resp)
+	}
 	return renderNormalized(app, n)
+}
+
+// unusableBodyErr reports a 2xx whose non-empty body is not JSON. Rendering it
+// as data: null made "a proxy answered with HTML" look like "no results".
+// What an agent may do next depends on the method: a read is safe to retry
+// (server misbehaved, exit 7), but a mutation may already have happened, so
+// it gets the never-blindly-re-run code (exit 9).
+func unusableBodyErr(method string, resp *httpx.Response) *ExitError {
+	excerpt := bytes.TrimSpace(resp.Body)
+	if len(excerpt) > 200 {
+		cut := 200
+		for cut > 0 && !utf8.RuneStart(excerpt[cut]) {
+			cut--
+		}
+		excerpt = excerpt[:cut]
+	}
+	msg := fmt.Sprintf("the API answered HTTP %d but the body is not JSON (starts with %q)", resp.Status, string(excerpt))
+	if method == "GET" || method == "HEAD" {
+		return &ExitError{Code: ExitServer, Type: "server", Status: resp.Status, Message: msg}
+	}
+	return &ExitError{Code: ExitOutput, Type: "output", Status: resp.Status,
+		Message: msg + "; the request may have taken effect, so do not blindly re-run it"}
 }
 
 func renderNormalized(app *App, n envelope.Normalized) error {
@@ -423,16 +488,30 @@ func printDryRun(app *App, method, path string, query []httpx.QueryPair, body an
 }
 
 func dryRunMultipartBody(fields []httpx.FieldValue) map[string]any {
-	m := map[string]any{}
+	// A repeated field (skills[] twice) is sent as two parts, so the preview
+	// must show both rather than the last one; a single value stays a string.
+	var order []string
+	values := map[string][]string{}
 	for _, f := range fields {
+		v := f.Value
 		if f.IsFile {
-			m[f.Name] = "@" + f.Value
-			continue
+			v = "@" + f.Value
 		}
-		m[f.Name] = f.Value
+		if _, seen := values[f.Name]; !seen {
+			order = append(order, f.Name)
+		}
+		values[f.Name] = append(values[f.Name], v)
 	}
-	if len(m) == 0 {
+	if len(order) == 0 {
 		return nil
+	}
+	m := make(map[string]any, len(order))
+	for _, name := range order {
+		if vs := values[name]; len(vs) == 1 {
+			m[name] = vs[0]
+		} else {
+			m[name] = vs
+		}
 	}
 	return m
 }

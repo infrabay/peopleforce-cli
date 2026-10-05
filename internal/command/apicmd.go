@@ -185,7 +185,7 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 			if err != nil {
 				return wrapTransport(err)
 			}
-			return renderResponse(app, resp)
+			return renderResponse(app, method, resp)
 		},
 	}
 	cmd.Flags().StringVar(&inputArg, "input", "", "request body from @file, - (stdin), or inline JSON")

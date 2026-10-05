@@ -242,3 +242,14 @@ func TestNormalizeStatusIsAlwaysTheHTTPStatus(t *testing.T) {
 		t.Errorf("meta.status = %v, want the HTTP status 201", n.Meta["status"])
 	}
 }
+
+func TestNormalizeNotJSONFlag(t *testing.T) {
+	if !Normalize([]byte("<html>"), 200).NotJSON {
+		t.Error("non-empty non-JSON body must set NotJSON")
+	}
+	for _, body := range []string{"", "  \n", "null", "[1]", `{"id":1}`} {
+		if Normalize([]byte(body), 200).NotJSON {
+			t.Errorf("body %q must not set NotJSON", body)
+		}
+	}
+}
