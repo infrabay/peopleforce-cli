@@ -8,8 +8,8 @@ This environment has `peopleforce` — a CLI for the PeopleForce HR API
   outside the PeopleForce allowlist rather than a bad key.
 - Output: JSON on stdout, always `{"data": ..., "meta": {...}}`; errors as
   JSON on stderr. Exit codes: 0 ok, 2 usage, 3 auth, 4 not found,
-  5 validation, 6 rate-limit, 7 server, 8 network, 9 the response could
-  not be read or rendered (the request already went through — do not
+  5 validation, 6 rate-limit, 7 server, 8 network, 9 a write whose
+  answer could not be read or rendered (it may have been applied — do not
   blindly retry).
 - Discover: `peopleforce commands` (full tree, one call),
   `peopleforce api ops`, `peopleforce api describe GET /employees`.

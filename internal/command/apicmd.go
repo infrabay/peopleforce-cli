@@ -111,7 +111,10 @@ automatically. The response is normalized into the standard
 Bodies are JSON only — the few multipart endpoints (candidate/document
 uploads) have curated commands instead, see ` + "`peopleforce api ops`" + `.
 
-DELETE calls are destructive and require --yes in non-interactive mode.`,
+DELETE calls, and the operations the registry marks destructive (such as
+employees terminate), require --yes in non-interactive mode. A path with a
+"." or ".." segment, also percent-encoded, is rejected (exit 2): proxies and
+routers resolve dot segments, so the request would not go where it says.`,
 		Example: `  peopleforce api call GET '/employees?page=2'
   peopleforce api call GET /job_levels
   peopleforce api call POST /working_patterns --set name="4-day week"

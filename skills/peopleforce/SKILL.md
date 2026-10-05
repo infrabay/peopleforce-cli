@@ -64,11 +64,12 @@ hunting for a new token before checking the allowlist.
   Lists put pagination in `meta` (`page`, `pages`, `count`, `items`).
 - stderr: diagnostics; errors are structured `{"error": {"type", "status", "message", "detail"}}`.
 - Exit codes: `0` ok · `2` usage · `3` auth · `4` not found · `5` validation ·
-  `6` rate-limited · `7` server error · `8` network · `9` the response could
-  not be read or rendered (the request already succeeded — do not blindly
-  retry; check whether the change was applied). Reads never exit 9: a GET
-  whose body is cut off exits 8 and one whose body is not JSON exits 7, and
-  both are safe to retry.
+  `6` rate-limited · `7` server error · `8` network · `9` a write got a 2xx
+  answer that could not be read or rendered (the change may already be
+  applied — do not blindly retry; check whether it was). Reads never exit 9:
+  a GET whose body is cut off exits 8, one whose body is not JSON exits 7,
+  and one whose output cannot be rendered (e.g. a `--jq` that does not fit
+  the data) exits 2 — all safe to retry.
 
 Trim tokens with the built-in jq (no external jq needed) or field projection:
 
@@ -107,6 +108,9 @@ peopleforce api call GET '/recruitment/vacancies?page=1'
 peopleforce api call POST /working_patterns --set name="4-day week"
 ```
 
+`api call` applies the same `--yes` guard as the curated commands, and
+rejects a path with a `.` or `..` segment (exit 2).
+
 ## Common recipes
 
 ```bash
@@ -143,6 +147,8 @@ printf '%s\n' \
 # report line per record: {"id":101,"ok":true,"status":200,"data":{...updated record...}}
 # "data" carries the updated record — no follow-up GETs needed to verify.
 # exit 0 = all ok, 5 = some failed; --dry-run previews the whole batch.
+# 8 / 9 = aborted on a network error / an unreadable answer: the last report
+# line has "ok": false, and on 9 that record may still have been applied.
 ```
 
 ## Custom fields: write flat, read nested

@@ -187,7 +187,7 @@ func TestJQUndefinedFunctionRejectedBeforeRequest(t *testing.T) {
 
 func TestRootHelpDocumentsExit9AndOpCount(t *testing.T) {
 	stdout, _, _ := runCLI(t, "", "--help")
-	if !strings.Contains(stdout, "9 the request succeeded") {
+	if !strings.Contains(stdout, "9 a write got a 2xx answer") {
 		t.Errorf("root help lacks exit code 9:\n%s", stdout)
 	}
 	want := fmt.Sprintf("all %d API operations", registry.Info.OpCount)

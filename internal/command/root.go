@@ -312,8 +312,8 @@ Output contract:
 Exit codes:
   0 success · 2 usage error · 3 auth failed · 4 not found ·
   5 validation rejected · 6 rate-limited · 7 server error · 8 network error ·
-  9 the request succeeded but its response could not be rendered (never safe
-  to blindly re-run: a mutation already happened)
+  9 a write got a 2xx answer that could not be read or rendered (never safe
+  to blindly re-run: the change may already be applied)
 
 Environment:
   PEOPLEFORCE_API_KEY   API token (X-API-KEY); get one in PeopleForce settings

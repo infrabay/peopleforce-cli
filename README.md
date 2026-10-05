@@ -88,11 +88,13 @@ it.
   `--output table`).
 - **Exit codes**: `0` ok · `2` usage · `3` auth · `4` not found ·
   `5` validation · `6` rate-limited · `7` server error · `8` network ·
-  `9` the request succeeded but its response could not be read or rendered
-  (never safe to blindly re-run: a mutation already happened). A write whose
-  2xx body is cut off, oversized or not JSON exits 9; the same on a GET exits
-  8 (cut off) or 7 (not JSON), since retrying a read is safe. An empty body,
-  such as a 204, is not an error.
+  `9` a write got a 2xx answer that could not be read or rendered (never
+  safe to blindly re-run: the change may already be applied). Reads never
+  exit 9: a GET whose 2xx body is cut off exits 8, one whose body is not JSON
+  exits 7, and one whose output cannot be rendered (a `--jq` that does not
+  fit the data, a closed stdout) exits 2 — all safe to retry. A non-2xx
+  response keeps its own code even when its body is cut off, and an empty
+  body, such as a 204, is not an error.
 - Built-in filtering (no external jq): `--jq '.data[] | {id}'`, `--fields id,email`,
   `--raw`/`-r` for unquoted string output (like `jq -r`); with both, `--jq` wins.
   An invalid `--jq`, including an unknown function, exits 2 before any
@@ -158,7 +160,9 @@ holidays, calendars, termination reference data, plus the multipart recruitment
 uploads (`recruitment candidates create`, `recruitment candidates documents
 upload` — `api call` bodies are JSON-only). Everything else is reachable via
 `api call`; illegal URL bytes in its path (spaces, non-ASCII) are
-percent-encoded automatically while bracket keys pass through verbatim.
+percent-encoded automatically while bracket keys pass through verbatim. A
+path with a `.` or `..` segment (also as `%2e%2e`) is rejected with exit 2:
+proxies resolve dot segments, so the request would not go where it says.
 
 Team membership is read from `teams list`: the upstream API has no
 `GET /teams/{id}` and an employee record carries no team field, so the list
