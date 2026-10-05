@@ -2,6 +2,8 @@ module github.com/infrabay/peopleforce-cli
 
 go 1.26.5
 
+toolchain go1.27.1
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/itchyny/gojq v0.12.19
