@@ -106,9 +106,9 @@ it.
   (auto-paginates, capped by `--max-pages`, default 20; empty results are `[]`,
   never `null`). `--all` reports per-page progress on stderr, replaces
   `meta.page` with `meta.fetched` (the total it collected), and drops a page
-  that merely replays page 1 — a backend ignoring `?page=` never inflates the
-  result silently. When the pagination metadata says more pages exist than
-  the replay let it keep, the result is marked truncated (exit 0).
+  that merely replays the first page — a backend ignoring `?page=` never
+  inflates the result silently. When the pagination metadata says more pages
+  exist than the replay let it keep, the result is marked truncated (exit 0).
 - An `--all` run that fails partway still writes the pages it did fetch to
   stdout, marked `"truncated": true` with `"next_page": N` in `meta`, while
   the exit code stays that of the failure and the error itself goes to
@@ -147,7 +147,7 @@ it.
 
 ```bash
 peopleforce commands                        # full command tree as JSON, one call
-peopleforce api ops                         # all 203 API operations
+peopleforce api ops                         # every API operation (~200)
 peopleforce api describe GET /employees     # params & body schema of one op
 peopleforce api call GET '/employees?page=2'  # raw escape hatch, still authed+normalized
 ```

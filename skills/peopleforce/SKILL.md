@@ -137,10 +137,10 @@ peopleforce employees documents upload 42 --document @contract.pdf \
 
 # Bulk-update many employees in ONE run (NDJSON in, NDJSON report out)
 printf '%s\n' \
-  '{"id": 8321, "set": {"github": "octocat"}}' \
-  '{"id": 8322, "set": {"github": "octocat"}}' \
+  '{"id": 101, "set": {"github": "octocat"}}' \
+  '{"id": 102, "set": {"github": "octocat"}}' \
   | peopleforce employees bulk-update --input -
-# report line per record: {"id":8321,"ok":true,"status":200,"data":{...updated record...}}
+# report line per record: {"id":101,"ok":true,"status":200,"data":{...updated record...}}
 # "data" carries the updated record — no follow-up GETs needed to verify.
 # exit 0 = all ok, 5 = some failed; --dry-run previews the whole batch.
 ```
@@ -153,8 +153,8 @@ key). Round-trip:
 
 ```bash
 peopleforce employee-fields list --jq '.data[] | {internal_name, name, type}'  # find internal_name
-peopleforce employees update 8321 --set github=octocat                        # write: flat key
-peopleforce employees get 8321 --jq '.data.fields.github.value' --raw          # read: nested
+peopleforce employees update 101 --set github=octocat                        # write: flat key
+peopleforce employees get 101 --jq '.data.fields.github.value' --raw          # read: nested
 ```
 
 Note: `employees list` returns a slim record without `fields`; use
@@ -188,8 +188,8 @@ Note: `employees list` returns a slim record without `fields`; use
   whose first request failed prints nothing. If the endpoint turns out to
   ignore `?page=` (later pages replay page 1), the replays are dropped, and
   the result is marked truncated (exit 0) when the metadata says more pages
-  exist than could be kept. `--output ndjson` drops `meta`, so truncation is invisible there:
-  and so do `table` and `--jq`. `--max-pages` limits pages fetched by that
+  exist than could be kept. `--output ndjson`, `table` and `--jq` drop `meta`, so truncation is
+  invisible there. `--max-pages` limits pages fetched by that
   run, not the page number, and a run cut short by the cap carries the same
   `"truncated"` / `"next_page"` markers while exiting 0. Under the default
   `--output json`, treat the absence of those markers — not the exit code —

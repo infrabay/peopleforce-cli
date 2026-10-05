@@ -54,6 +54,12 @@ changelog:
   use: github
   sort: asc
 
+release:
+  # A pre-release tag (v1.2.0-rc.1) is published as a GitHub pre-release, so
+  # it never becomes "Latest" — the release badge and the README download
+  # link keep pointing at the last stable version.
+  prerelease: auto
+
 homebrew_casks:
   - name: peopleforce
     binaries:
