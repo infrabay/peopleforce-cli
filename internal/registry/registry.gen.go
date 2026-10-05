@@ -1628,7 +1628,7 @@ var Ops = []Op{
 		},
 		BodyKind: "json",
 		Envelope: "none",
-		Examples: []string{"peopleforce teams create --name Platform --team-lead-id 8321", "peopleforce teams members add 34016 --user-id 8321"},
+		Examples: []string{"peopleforce teams create --name Platform --team-lead-id 123", "peopleforce teams members add 42 --user-id 123"},
 	},
 	{
 		Command:    "teams members add",

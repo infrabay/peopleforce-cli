@@ -133,8 +133,8 @@ operations:
     body:
       "user_ids[]": { skip: true }
     examples:
-      - peopleforce teams create --name Platform --team-lead-id 8321
-      - peopleforce teams members add 34016 --user-id 8321   # members are added separately
+      - peopleforce teams create --name Platform --team-lead-id 123
+      - peopleforce teams members add 42 --user-id 123   # members are added separately
   "PUT /teams/{id}":
     command: teams update
   "DELETE /teams/{id}":
