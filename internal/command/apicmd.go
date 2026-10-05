@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -123,6 +124,9 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 				path = "/" + path
 			}
 			path = httpx.SanitizeRequestTarget(path)
+			if err := rejectDotSegments(path); err != nil {
+				return err
+			}
 
 			var bodyBytes []byte
 			contentType := ""
@@ -151,7 +155,14 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 				if err != nil {
 					return err
 				}
-				contentType = "application/json"
+				// An empty object is sent as no body at all (see
+				// jsonBodyBytes), so it carries no Content-Type either, and
+				// the dry-run preview must not show "body": {} for it.
+				if len(bodyBytes) > 0 {
+					contentType = "application/json"
+				} else {
+					body = nil
+				}
 			}
 
 			// The registry already knows which endpoints are destructive
@@ -169,7 +180,7 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 			}
 			if app.dryRun {
 				var pretty any
-				if body != nil {
+				if body != nil { // nil unless a body is actually sent, see above
 					pretty = body
 				}
 				return printDryRun(app, method, path, nil, pretty)
@@ -191,4 +202,29 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 	cmd.Flags().StringVar(&inputArg, "input", "", "request body from @file, - (stdin), or inline JSON")
 	cmd.Flags().StringArrayVar(&setArgs, "set", nil, "set a body field: key=value or key:=json (repeatable)")
 	return cmd
+}
+
+// rejectDotSegments refuses a request target whose path has a "." or ".."
+// segment, either literal or after one percent-decode (%2e%2e).
+//
+// The path is matched against the registry (to decide whether --yes is
+// required) in cleaned form, but it is sent verbatim after the base path
+// (/api/public/v3). `/../v3/employees/1/terminate` therefore matched no
+// operation and skipped the destructive guard, while a proxy or router
+// resolving dot segments turned the sent target into the terminate endpoint.
+// The matched path and the sent path must be the same string, so instead of
+// cleaning the path here we refuse it, exactly as httpx.BuildPath does for
+// the path values of curated commands. registry.Match still canonicalises as
+// defence in depth.
+func rejectDotSegments(target string) error {
+	p, _, _ := strings.Cut(target, "?")
+	if u, err := url.PathUnescape(p); err == nil {
+		p = u
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return usageErr("path %q contains a %q segment; dot segments are resolved by proxies and routers, so the request would not go where the path says", target, seg)
+		}
+	}
+	return nil
 }

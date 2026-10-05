@@ -309,11 +309,15 @@ installs it for most other agents.`,
 				// repository. The home directory is the user's own, and
 				// tools such as `npx skills` routinely make ~/.claude/skills
 				// a symlink to ~/.agents/skills, so --global follows links.
-				dest, err := installSkill(anchor, sub, !global)
+				dest, err := installSkill(anchor, sub, !global, app.dryRun)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(app.Stderr, "installed %s\n", dest)
+				if app.dryRun {
+					fmt.Fprintf(app.Stderr, "dry run: would install %s\n", dest)
+				} else {
+					fmt.Fprintf(app.Stderr, "installed %s\n", dest)
+				}
 			}
 			return nil
 		},
@@ -325,7 +329,9 @@ installs it for most other agents.`,
 }
 
 // installSkill writes SKILL.md to <anchor>/<sub...>/, creating the
-// directories it needs.
+// directories it needs. With dryRun it runs the same checks (so a dry run
+// reports the refusal a real run would) but creates nothing and returns the
+// path it would write.
 //
 // In a project (strict), the path below the anchor is fixed and a cloned
 // repo can carry a symlink at any step of it: .claude/skills/peopleforce ->
@@ -333,9 +339,12 @@ installs it for most other agents.`,
 // pick the file this overwrites, so every component is Lstat'ed and a symlink
 // is refused rather than traversed. On unix the final open also carries
 // O_NOFOLLOW, closing the window between that check and the open.
-func installSkill(anchor string, sub []string, strict bool) (string, error) {
+func installSkill(anchor string, sub []string, strict, dryRun bool) (string, error) {
 	dir := filepath.Join(append([]string{anchor}, sub...)...)
 	if !strict {
+		if dryRun {
+			return filepath.Join(dir, "SKILL.md"), nil
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", err
 		}
@@ -351,6 +360,9 @@ func installSkill(anchor string, sub []string, strict bool) (string, error) {
 		fi, err := os.Lstat(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
+			if dryRun {
+				continue
+			}
 			if err := os.Mkdir(dir, 0o755); err != nil {
 				return "", err
 			}
@@ -365,6 +377,9 @@ func installSkill(anchor string, sub []string, strict bool) (string, error) {
 	dest := filepath.Join(dir, "SKILL.md")
 	if fi, err := os.Lstat(dest); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
 		return "", usageErr("%s is a symlink; refusing to write through it", dest)
+	}
+	if dryRun {
+		return dest, nil
 	}
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|oNoFollow, 0o644)
 	if err != nil {
