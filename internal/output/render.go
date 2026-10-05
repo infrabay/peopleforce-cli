@@ -91,23 +91,62 @@ func Render(w io.Writer, n envelope.Normalized, opts Options) error {
 }
 
 func renderJSON(w io.Writer, v any, pretty bool) error {
-	enc := json.NewEncoder(w)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	if pretty {
 		enc.SetIndent("", "  ")
 	}
-	return enc.Encode(v)
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	_, err := w.Write(EscapeC1(buf.Bytes()))
+	return err
+}
+
+// EscapeC1 rewrites every U+0080-U+009F code point in encoded JSON as a \u00XX
+// escape. encoding/json and gojq escape only bytes below 0x20, so a C1 control
+// from API data (U+009B is a single-byte CSI in xterm-family terminals) would
+// otherwise reach the terminal verbatim. In UTF-8 those code points are exactly
+// the two-byte sequences C2 80..C2 9F, a lead byte C2 can only be followed by
+// one continuation byte, and JSON permits non-ASCII only inside strings, so the
+// rewrite stays valid JSON and decodes to the original value.
+func EscapeC1(b []byte) []byte {
+	if !bytes.Contains(b, []byte{0xc2}) {
+		return b
+	}
+	out := make([]byte, 0, len(b)+16)
+	for i := 0; i < len(b); i++ {
+		if b[i] == 0xc2 && i+1 < len(b) && b[i+1] >= 0x80 && b[i+1] <= 0x9f {
+			out = append(out, fmt.Sprintf("\\u%04x", b[i+1])...)
+			i++
+			continue
+		}
+		out = append(out, b[i])
+	}
+	return out
 }
 
 // renderNDJSON streams each data item on its own line; non-array data is a
 // single line. meta is omitted (available via --output json).
 func renderNDJSON(w io.Writer, n envelope.Normalized) error {
+	// The API may hand back pretty-printed records; one record per line is the
+	// whole point of the format, so every item is compacted first.
+	writeLine := func(raw []byte) error {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, raw); err != nil {
+			buf.Reset()
+			buf.Write(raw)
+		}
+		buf.WriteByte('\n')
+		_, err := w.Write(EscapeC1(buf.Bytes()))
+		return err
+	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(n.Data, &items); err != nil {
-		_, werr := fmt.Fprintf(w, "%s\n", n.Data)
-		return werr
+		return writeLine(n.Data)
 	}
 	for _, item := range items {
-		if _, err := fmt.Fprintf(w, "%s\n", item); err != nil {
+		if err := writeLine(item); err != nil {
 			return err
 		}
 	}
@@ -119,13 +158,18 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 	if err != nil {
 		return fmt.Errorf("invalid --jq expression: %w", err)
 	}
-	// gojq operates on any-typed values; round-trip the envelope.
+	// gojq operates on any-typed values; round-trip the envelope. UseNumber
+	// keeps integers beyond 2^53 exact (a float64 decode turned
+	// 9007199254740993 into ...992); gojq turns json.Number into an exact int,
+	// a *big.Int, or a float64 for decimals.
 	encoded, err := json.Marshal(n)
 	if err != nil {
 		return err
 	}
 	var input any
-	if err := json.Unmarshal(encoded, &input); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(encoded))
+	dec.UseNumber()
+	if err := dec.Decode(&input); err != nil {
 		return err
 	}
 	// Buffer until the iterator finishes: writing incrementally left the
@@ -151,7 +195,7 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&buf, "%s\n", line)
+		fmt.Fprintf(&buf, "%s\n", EscapeC1(line))
 	}
 	_, err = w.Write(buf.Bytes())
 	return err
@@ -161,7 +205,8 @@ func renderJQ(w io.Writer, n envelope.Normalized, expr string, raw bool) error {
 // of those strings are attacker-influenced — a candidate's name arrives
 // through a public job application — so an embedded ESC sequence could erase
 // lines, hide a row, or rewrite the window title of whoever reads the output.
-// JSON output is unaffected: encoding/json escapes control bytes already.
+// JSON output needs no stripping for C0 (encoding/json escapes those) but not
+// for C1, which EscapeC1 rewrites as \u00XX in every JSON writer.
 //
 // sanitizeRaw is the --jq --raw variant. Newline and tab are ordinary content
 // on that path (real jq -r prints them, and agents extract multi-line fields
@@ -203,6 +248,11 @@ func isTerminalControl(r rune) bool {
 // single data object). unmatched lists the requested fields that appeared on
 // no item at all — almost always a wrong field name for the endpoint.
 func projectFields(n envelope.Normalized, fields []string) (_ envelope.Normalized, unmatched []string, _ error) {
+	// null data (a 204, say) has nothing to project; unmarshalling it into a
+	// slice would succeed and turn "nothing" into "an empty list".
+	if t := bytes.TrimSpace(n.Data); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return n, nil, nil
+	}
 	hit := make(map[string]bool, len(fields))
 	keep := func(item map[string]json.RawMessage) map[string]json.RawMessage {
 		out := make(map[string]json.RawMessage, len(fields))
@@ -251,10 +301,16 @@ func projectFields(n envelope.Normalized, fields []string) (_ envelope.Normalize
 // renderTable prints a minimal aligned table of top-level scalar fields —
 // a convenience for humans; agents should use JSON.
 func renderTable(w io.Writer, n envelope.Normalized) error {
+	// UseNumber so integers beyond 2^53 print exactly.
+	decode := func(v any) error {
+		dec := json.NewDecoder(bytes.NewReader(n.Data))
+		dec.UseNumber()
+		return dec.Decode(v)
+	}
 	var items []map[string]any
-	if err := json.Unmarshal(n.Data, &items); err != nil {
+	if err := decode(&items); err != nil {
 		var single map[string]any
-		if err := json.Unmarshal(n.Data, &single); err != nil {
+		if err := decode(&single); err != nil {
 			_, werr := fmt.Fprintf(w, "%s\n", n.Data)
 			return werr
 		}
@@ -333,6 +389,16 @@ func formatCell(v any) string {
 		return ""
 	case string:
 		return sanitizeCell(x)
+	case json.Number:
+		lit := x.String()
+		if !strings.ContainsAny(lit, ".eE") {
+			return lit // an integer literal prints exactly, whatever its size
+		}
+		f, err := x.Float64()
+		if err != nil {
+			return sanitizeCell(lit)
+		}
+		return formatCell(f)
 	case float64:
 		if x == float64(int64(x)) {
 			return fmt.Sprintf("%d", int64(x))
@@ -342,3 +408,8 @@ func formatCell(v any) string {
 		return sanitizeCell(fmt.Sprintf("%v", x))
 	}
 }
+
+// SanitizeText prepares a human-readable string for the terminal: C0 controls
+// other than newline and tab, DEL and the C1 range are removed, exactly as the
+// --raw path does.
+func SanitizeText(s string) string { return sanitizeRaw(s) }

@@ -1,11 +1,14 @@
 package command
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/infrabay/peopleforce-cli/internal/output"
 )
 
 // Exit codes are part of the agent contract — documented in --help, README
@@ -86,12 +89,17 @@ func PrintError(w io.Writer, err error, jsonMode bool) {
 		ee = &ExitError{Code: ExitUsage, Type: "usage", Message: err.Error()}
 	}
 	if jsonMode {
-		enc := json.NewEncoder(w)
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]*ExitError{"error": ee})
+		if enc.Encode(map[string]*ExitError{"error": ee}) == nil {
+			_, _ = w.Write(output.EscapeC1(buf.Bytes()))
+		}
 		return
 	}
-	fmt.Fprintf(w, "error: %s\n", ee.Message)
+	// The message can carry API-controlled text (--jq 'error(.data.name)'), so
+	// it gets the table renderer's sanitization before reaching the terminal.
+	fmt.Fprintf(w, "error: %s\n", output.SanitizeText(ee.Message))
 }
 
 // CodeFor extracts the exit code for main().
