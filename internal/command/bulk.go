@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/infrabay/peopleforce-cli/internal/envelope"
 	"github.com/infrabay/peopleforce-cli/internal/httpx"
+	"github.com/infrabay/peopleforce-cli/internal/output"
 )
 
 // bulkRecord is one line of bulk-update input.
@@ -31,27 +33,37 @@ func newEmployeesBulkUpdateCommand(app *App) *cobra.Command {
 		Long: `Reads update records from --input and applies each as PUT /employees/{id},
 reusing a single connection. Input is NDJSON — one JSON object per line:
 
-  {"id": 8321, "set": {"github": "octocat"}}
+  {"id": 101, "set": {"github": "octocat"}}
 
 (a JSON array of the same objects is also accepted). The report on stdout is
 NDJSON, one line per record, in input order:
 
-  {"id": 8321, "ok": true, "status": 200, "data": {...updated employee...}}
-  {"id": 9999, "ok": false, "status": 404, "error": {...}}
+  {"id": 101, "ok": true, "status": 200, "data": {...updated employee...}}
+  {"id": 102, "ok": false, "status": 404, "error": {...}}
 
 "data" carries the API's updated record when it returns one, so results can
 be verified without follow-up GETs. --output/--jq/--fields do not apply to
 this report. Exit code 0 when every record succeeded, 5 when any failed.
 
-A network failure aborts the run: the report stops at the last record that
-got a response and the exit code is 8, not 5. Records already on stdout were
-applied; anything after the last reported line was not attempted, so re-run
-with the remainder rather than the whole file.
+Two failures abort the run instead of being reported per record, because
+nothing after them can be trusted to have been sent or understood:
+
+  exit 8  network failure. The report stops at the record that failed; it
+          was not answered, so it may or may not have been applied.
+  exit 9  a 2xx answer that cannot be read: its body was cut off or is not
+          JSON (a proxy or WAF page). The last report line has "ok": false
+          and an error of type "output"; that update may well have been
+          applied, so check it before re-running.
+
+In both cases records reported "ok": true before the last line were applied
+and anything after the last line was not attempted: re-run with the
+remainder, not the whole file. Exit 5 means the run finished and at least
+one record failed (see the per-record report).
 
 --dry-run previews the whole batch without sending anything.`,
 		Example: `  peopleforce employees bulk-update --input @updates.jsonl
   peopleforce employees bulk-update --input @updates.jsonl --dry-run
-  printf '%s\n' '{"id":8321,"set":{"github":"octocat"}}' | peopleforce employees bulk-update --input -`,
+  printf '%s\n' '{"id":101,"set":{"github":"octocat"}}' | peopleforce employees bulk-update --input -`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBulkUpdate(app, inputArg)
@@ -75,7 +87,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 		return usageErr("--input contains no records")
 	}
 
-	enc := json.NewEncoder(app.Stdout) // NDJSON: one compact line per record
+	enc := &reportEncoder{w: app.Stdout} // NDJSON: one compact line per record
 
 	if app.dryRun {
 		client := app.previewClient()
@@ -115,18 +127,42 @@ func runBulkUpdate(app *App, inputArg string) error {
 			// Network failure likely affects the whole batch; report this
 			// record and abort rather than burn a timeout per record.
 			failCount++
-			line := map[string]any{"id": rec.ID, "ok": false,
-				"error": map[string]any{"type": "network", "message": err.Error()}}
+			// Report exactly what the process will exit with: a 2xx whose body
+			// was cut off is exit 9 / "output", not a network error.
+			werr := wrapTransport(err)
+			ee := &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
+			errors.As(werr, &ee)
+			line := map[string]any{"id": rec.ID, "ok": false, "error": map[string]any{"type": ee.Type, "message": ee.Message}}
+			if ee.Status != 0 {
+				line["status"] = ee.Status
+			}
 			if encErr := enc.Encode(line); encErr != nil {
 				return reportWriteErr(rec.ID, encErr)
 			}
-			fmt.Fprintf(app.Stderr, "%d ok, %d failed, aborted on network error\n", okCount, failCount)
-			return wrapTransport(err)
+			if ee.Code == ExitNetwork {
+				fmt.Fprintf(app.Stderr, "%d ok, %d failed, aborted on network error\n", okCount, failCount)
+			} else {
+				fmt.Fprintf(app.Stderr, "%d ok, %d failed, aborted: the response to employee %s could not be read, the update may have been applied\n", okCount, failCount, rec.ID)
+			}
+			return werr
 		}
 
 		if resp.Status >= 200 && resp.Status <= 299 {
-			okCount++
 			n := envelope.Normalize(resp.Body, resp.Status)
+			if n.NotJSON {
+				// A proxy/WAF page answered, so the update may never have
+				// reached PeopleForce; "applied" would be a guess. Same exit
+				// as `employees update` for this response.
+				failCount++
+				ee := unusableBodyErr("PUT", resp)
+				if encErr := enc.Encode(map[string]any{"id": rec.ID, "ok": false, "status": resp.Status,
+					"error": map[string]any{"type": ee.Type, "message": ee.Message}}); encErr != nil {
+					return reportWriteErr(rec.ID, encErr)
+				}
+				fmt.Fprintf(app.Stderr, "%d ok, %d failed, aborted: the answer for employee %s is not JSON, the update may or may not have been applied\n", okCount, failCount, rec.ID)
+				return ee
+			}
+			okCount++
 			if err := enc.Encode(map[string]any{
 				"id": rec.ID, "ok": true, "status": resp.Status, "data": n.Data,
 			}); err != nil {
@@ -149,6 +185,21 @@ func runBulkUpdate(app *App, inputArg string) error {
 			Message: fmt.Sprintf("%d of %d updates failed (per-record report on stdout)", failCount, len(records))}
 	}
 	return nil
+}
+
+// reportEncoder writes NDJSON lines through output.EscapeC1, like every other
+// JSON writer: API data in the report (an updated employee's name) could carry
+// a C1 control such as U+009B, which encoding/json passes through verbatim and
+// a terminal may act on.
+type reportEncoder struct{ w io.Writer }
+
+func (e *reportEncoder) Encode(v any) error {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		return err
+	}
+	_, err := e.w.Write(output.EscapeC1(buf.Bytes()))
+	return err
 }
 
 // reportWriteErr classifies a failed write of the per-record report after the

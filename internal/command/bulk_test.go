@@ -37,7 +37,7 @@ func TestBulkUpdateReportsPerRecord(t *testing.T) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		bodies = append(bodies, string(b))
 		switch r.URL.Path {
-		case "/employees/8322":
+		case "/employees/102":
 			w.WriteHeader(422)
 			fmt.Fprint(w, `{"message":"invalid field"}`)
 		default:
@@ -49,16 +49,16 @@ func TestBulkUpdateReportsPerRecord(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
 	os.WriteFile(input, []byte(
-		`{"id": 8321, "set": {"github": "octocat"}}
-{"id": 8322, "set": {"github": ""}}
-{"id": 8323, "set": {"github": "octocat"}}
+		`{"id": 101, "set": {"github": "octocat"}}
+{"id": 102, "set": {"github": ""}}
+{"id": 103, "set": {"github": "octocat"}}
 `), 0o644)
 
 	stdout, stderr, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", "@"+input)
 	if code != ExitValidation {
 		t.Errorf("exit = %d, want %d (one record failed)", code, ExitValidation)
 	}
-	if len(paths) != 3 || paths[0] != "PUT /employees/8321" || paths[1] != "PUT /employees/8322" || paths[2] != "PUT /employees/8323" {
+	if len(paths) != 3 || paths[0] != "PUT /employees/101" || paths[1] != "PUT /employees/102" || paths[2] != "PUT /employees/103" {
 		t.Errorf("requests = %v", paths)
 	}
 	if bodies[0] != `{"github":"octocat"}` {
@@ -115,7 +115,7 @@ func TestBulkUpdateDryRunSendsNothing(t *testing.T) {
 
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
-	os.WriteFile(input, []byte(`{"id": 8321, "set": {"github": "octocat"}}`), 0o644)
+	os.WriteFile(input, []byte(`{"id": 101, "set": {"github": "octocat"}}`), 0o644)
 
 	stdout, _, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", "@"+input, "--dry-run")
 	if code != 0 {
@@ -194,7 +194,7 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 		mu.Lock()
 		attempted = append(attempted, r.Method+" "+r.URL.Path)
 		mu.Unlock()
-		if r.URL.Path == "/employees/8322" {
+		if r.URL.Path == "/employees/102" {
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err != nil {
 				t.Errorf("hijack: %v", err)
@@ -210,9 +210,9 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
 	os.WriteFile(input, []byte(
-		`{"id": 8321, "set": {"github": "octocat"}}
-{"id": 8322, "set": {"github": "octocat"}}
-{"id": 8323, "set": {"github": "hubot"}}
+		`{"id": 101, "set": {"github": "octocat"}}
+{"id": 102, "set": {"github": "octocat"}}
+{"id": 103, "set": {"github": "hubot"}}
 `), 0o644)
 
 	stdout, stderr, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", "@"+input)
@@ -222,19 +222,19 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 	mu.Lock()
 	got := append([]string(nil), attempted...)
 	mu.Unlock()
-	if len(got) != 2 || got[0] != "PUT /employees/8321" || got[1] != "PUT /employees/8322" {
+	if len(got) != 2 || got[0] != "PUT /employees/101" || got[1] != "PUT /employees/102" {
 		t.Errorf("requests = %v, want the run to stop at the failed record", got)
 	}
 
 	lines := decodeNDJSON(t, stdout)
 	if len(lines) != 2 {
-		t.Fatalf("report lines = %d, want 2 (8323 was never attempted)\n%s", len(lines), stdout)
+		t.Fatalf("report lines = %d, want 2 (103 was never attempted)\n%s", len(lines), stdout)
 	}
-	if lines[0]["id"] != 8321.0 || lines[0]["ok"] != true || lines[0]["status"] != 200.0 {
-		t.Errorf("line 0 = %v, want 8321 applied", lines[0])
+	if lines[0]["id"] != 101.0 || lines[0]["ok"] != true || lines[0]["status"] != 200.0 {
+		t.Errorf("line 0 = %v, want 101 applied", lines[0])
 	}
-	if lines[1]["id"] != 8322.0 || lines[1]["ok"] != false {
-		t.Errorf("line 1 = %v, want 8322 failed", lines[1])
+	if lines[1]["id"] != 102.0 || lines[1]["ok"] != false {
+		t.Errorf("line 1 = %v, want 102 failed", lines[1])
 	}
 	if ee, _ := lines[1]["error"].(map[string]any); ee == nil || ee["type"] != "network" {
 		t.Errorf("line 1 error = %v, want type network", lines[1]["error"])
@@ -247,7 +247,7 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 // README and SKILL.md both teach piping records in, so the "-" arm has to
 // reach the same parser as @file.
 func TestBulkUpdateReadsRecordsFromStdin(t *testing.T) {
-	stdin := `{"id": 8321, "set": {"github": "octocat"}}` + "\n"
+	stdin := `{"id": 101, "set": {"github": "octocat"}}` + "\n"
 	stdout, stderr, code := runWithStdin(t, "", stdin, "https://api.example.test/v3",
 		"employees", "bulk-update", "--input", "-", "--dry-run")
 	if code != 0 {
@@ -257,10 +257,10 @@ func TestBulkUpdateReadsRecordsFromStdin(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("report lines = %d, want 1\n%s", len(lines), stdout)
 	}
-	if lines[0]["id"] != 8321.0 || lines[0]["dry_run"] != true || lines[0]["method"] != "PUT" {
+	if lines[0]["id"] != 101.0 || lines[0]["dry_run"] != true || lines[0]["method"] != "PUT" {
 		t.Errorf("preview = %v", lines[0])
 	}
-	if lines[0]["url"] != "https://api.example.test/v3/employees/8321" {
+	if lines[0]["url"] != "https://api.example.test/v3/employees/101" {
 		t.Errorf("preview url = %v", lines[0]["url"])
 	}
 	if body, _ := lines[0]["body"].(map[string]any); body == nil || body["github"] != "octocat" {
@@ -308,5 +308,105 @@ func TestBulkUpdateInputArgumentErrors(t *testing.T) {
 				t.Errorf("stdout must stay empty on a usage error, got: %s", stdout)
 			}
 		})
+	}
+}
+
+func bulkInput(t *testing.T, lines ...string) string {
+	t.Helper()
+	input := filepath.Join(t.TempDir(), "updates.jsonl")
+	if err := os.WriteFile(input, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return "@" + input
+}
+
+// A PUT whose 2xx body is cut off exits 9; the report line and stderr must say
+// the same, not "network".
+func TestBulkUpdateCutOffSuccessBodyReportsOutput(t *testing.T) {
+	var puts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		puts++
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprint(buf, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"data\":")
+		buf.Flush()
+	}))
+	defer srv.Close()
+
+	in := bulkInput(t, `{"id":101,"set":{"a":"b"}}`, `{"id":102,"set":{"a":"b"}}`)
+	stdout, stderr, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", in)
+	if code != ExitOutput {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOutput, stderr)
+	}
+	if puts != 1 {
+		t.Errorf("PUTs = %d, want the run to abort after the first", puts)
+	}
+	lines := decodeNDJSON(t, stdout)
+	if len(lines) != 1 || lines[0]["ok"] != false {
+		t.Fatalf("report = %s", stdout)
+	}
+	ee, _ := lines[0]["error"].(map[string]any)
+	if ee == nil || ee["type"] != "output" || !strings.Contains(fmt.Sprint(ee["message"]), "HTTP 200") {
+		t.Errorf("error = %v, want type output naming HTTP 200", lines[0]["error"])
+	}
+	if strings.Contains(stderr, "network") {
+		t.Errorf("stderr must not call this a network error: %s", stderr)
+	}
+}
+
+// A 2xx HTML page from a proxy is not proof the update happened.
+func TestBulkUpdateNonJSONSuccessAbortsWithExit9(t *testing.T) {
+	var puts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		puts++
+		fmt.Fprint(w, "<html>blocked by WAF</html>")
+	}))
+	defer srv.Close()
+
+	in := bulkInput(t, `{"id":101,"set":{"a":"b"}}`, `{"id":102,"set":{"a":"b"}}`)
+	stdout, stderr, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", in)
+	if code != ExitOutput {
+		t.Fatalf("exit = %d, want %d; stderr: %s", code, ExitOutput, stderr)
+	}
+	if puts != 1 {
+		t.Errorf("PUTs = %d, want the run to abort after the first", puts)
+	}
+	lines := decodeNDJSON(t, stdout)
+	if len(lines) != 1 || lines[0]["ok"] != false || lines[0]["status"] != 200.0 {
+		t.Fatalf("report = %s", stdout)
+	}
+	ee, _ := lines[0]["error"].(map[string]any)
+	if ee == nil || ee["type"] != "output" || !strings.Contains(fmt.Sprint(ee["message"]), "HTTP 200 but the body is not JSON") {
+		t.Errorf("error = %v", lines[0]["error"])
+	}
+}
+
+// Like every other JSON writer, the report must not hand a C1 control from API
+// data (U+009B is CSI) to the terminal verbatim.
+func TestBulkUpdateReportEscapesC1(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"id":101,"name":"x\u009b31mred"}}`)
+	}))
+	defer srv.Close()
+
+	in := bulkInput(t, `{"id":101,"set":{"a":"b"}}`)
+	stdout, stderr, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", in)
+	if code != 0 {
+		t.Fatalf("exit = %d; stderr: %s", code, stderr)
+	}
+	if strings.Contains(stdout, "\u009b") {
+		t.Errorf("raw U+009B reached stdout: %q", stdout)
+	}
+	if !strings.Contains(stdout, `\u009b`) {
+		t.Errorf("expected an escaped \\u009b: %q", stdout)
+	}
+	// dry-run lines go through the same writer
+	stdout, _, _ = runCLI(t, srv.URL, "employees", "bulk-update", "--dry-run", "--input",
+		bulkInput(t, "{\"id\":101,\"set\":{\"a\":\"\u009b\"}}"))
+	if strings.Contains(stdout, "\u009b") {
+		t.Errorf("raw U+009B reached dry-run stdout: %q", stdout)
 	}
 }
