@@ -3,6 +3,7 @@ package command
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -215,7 +216,7 @@ func buildJSONBody(app *App, cmd *cobra.Command, op *registry.Op, inputArg strin
 		if err != nil {
 			return nil, err
 		}
-		if err := unmarshalPreservingNumbers(raw, &body); err != nil {
+		if body, err = unmarshalObject(raw); err != nil {
 			return nil, usageErr("--input is not a JSON object: %v", err)
 		}
 	}
@@ -347,8 +348,8 @@ func buildMultipartFields(app *App, cmd *cobra.Command, op *registry.Op, inputAr
 		if err != nil {
 			return nil, nil, err
 		}
-		var m map[string]any
-		if err := unmarshalPreservingNumbers(raw, &m); err != nil {
+		m, err := unmarshalObject(raw)
+		if err != nil {
 			return nil, nil, usageErr("--input is not a JSON object: %v", err)
 		}
 		keys := make([]string, 0, len(m))
@@ -478,7 +479,52 @@ func scalarString(v any) (string, error) {
 func unmarshalPreservingNumbers(raw []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	return dec.Decode(dst)
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	return requireNoTrailingData(dec)
+}
+
+// requireNoTrailingData fails when anything but whitespace follows the value
+// a decoder just read. Decode stops after the first value, so without this
+// `{"a":1} INVALID`, a second NDJSON object, or `1 999` would send only the
+// valid prefix and exit 0 — the caller believes all of its input was applied.
+func requireNoTrailingData(dec *json.Decoder) error {
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("unexpected trailing data after the JSON value")
+	}
+	return nil
+}
+
+// unmarshalObject decodes a request body, which must be a JSON object. Decoding
+// `null` straight into a map would replace it with nil and panic on the first
+// assignment; arrays, strings and numbers are not bodies either.
+func unmarshalObject(raw []byte) (map[string]any, error) {
+	var v any
+	if err := unmarshalPreservingNumbers(raw, &v); err != nil {
+		return nil, err
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("got %s, want a JSON object", jsonKind(v))
+	}
+	return m, nil
+}
+
+func jsonKind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case []any:
+		return "an array"
+	case string:
+		return "a string"
+	case json.Number:
+		return "a number"
+	case bool:
+		return "a boolean"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 // readInput loads a request body from @file, "-" (stdin), or inline JSON.

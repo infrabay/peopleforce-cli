@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,7 +90,16 @@ func (a *App) validateOutputOptions() error {
 		return usageErr("unknown output format %q (want %s)", a.outFormat, output.FormatList())
 	}
 	if a.jqExpr != "" {
-		if _, err := gojq.Parse(a.jqExpr); err != nil {
+		// Parse alone accepts `--jq does_not_exist`; the undefined function
+		// only surfaces on compile, which used to happen at render time —
+		// after a POST had already gone out. render.go runs the parsed query
+		// with Query.Run, i.e. gojq.Compile with no options, so the same
+		// call here can never disagree with it.
+		q, err := gojq.Parse(a.jqExpr)
+		if err == nil {
+			_, err = gojq.Compile(q)
+		}
+		if err != nil {
 			return usageErr("invalid --jq expression: %v", err)
 		}
 	}
@@ -290,6 +300,8 @@ func (a *App) confirmDestructive(what string) error {
 	return nil
 }
 
+// rootLong carries an {{OPS}} placeholder filled from the registry, so the
+// count cannot drift after `make update-spec`.
 const rootLong = `peopleforce is a command-line client for the PeopleForce HR API,
 designed to be driven by both humans and AI agents.
 
@@ -299,7 +311,9 @@ Output contract:
 
 Exit codes:
   0 success · 2 usage error · 3 auth failed · 4 not found ·
-  5 validation rejected · 6 rate-limited · 7 server error · 8 network error
+  5 validation rejected · 6 rate-limited · 7 server error · 8 network error ·
+  9 the request succeeded but its response could not be rendered (never safe
+  to blindly re-run: a mutation already happened)
 
 Environment:
   PEOPLEFORCE_API_KEY   API token (X-API-KEY); get one in PeopleForce settings
@@ -308,7 +322,7 @@ Environment:
 
 Discovery for agents:
   peopleforce commands --output json     entire command tree in one call
-  peopleforce api ops                    all 203 API operations
+  peopleforce api ops                    all {{OPS}} API operations
   peopleforce api describe GET /employees
   peopleforce api call GET '/employees?page=2'   raw escape hatch`
 
@@ -319,7 +333,7 @@ func NewRoot() (*cobra.Command, *App) {
 	root := &cobra.Command{
 		Use:           "peopleforce",
 		Short:         "CLI for the PeopleForce HR API",
-		Long:          rootLong,
+		Long:          strings.Replace(rootLong, "{{OPS}}", strconv.Itoa(registry.Info.OpCount), 1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// Fail on bad --output/--jq BEFORE any request is sent — a flag typo

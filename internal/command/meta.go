@@ -53,6 +53,24 @@ the key is passed via the global --api-key flag, or read from stdin with
 			if key == "" {
 				return usageErr("--api-key is required (use --api-key - to read it from stdin)")
 			}
+			if app.dryRun {
+				// Preview only: nothing is loaded or written, and the key
+				// itself is never echoed — just whether one was supplied.
+				path, _ := config.Path()
+				preview := map[string]any{
+					"dry_run":     true,
+					"action":      "save profile",
+					"profile":     app.profileName(),
+					"config_path": path,
+					"api_key":     "(set)",
+				}
+				if app.flagAPIURL != "" {
+					preview["api_url"] = app.flagAPIURL
+				}
+				enc := json.NewEncoder(app.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(preview)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return usageErr("%v", err)
@@ -125,6 +143,14 @@ every case; an unreadable config reports "config_error" with
 				}
 				resp, err := client.Do(context.Background(), httpx.Request{Method: "GET", Path: "/calendars"})
 				if err != nil {
+					// Same promise as the config-error path: the envelope is
+					// emitted even when the probe cannot reach the API. The
+					// transport error is a URL and an OS message, never the key.
+					result["authenticated"] = false
+					result["probe_error"] = err.Error()
+					if renderErr := renderValue(app, result); renderErr != nil {
+						return renderErr
+					}
 					return wrapTransport(err)
 				}
 				result["probe_status"] = resp.Status

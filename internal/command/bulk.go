@@ -118,7 +118,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 			line := map[string]any{"id": rec.ID, "ok": false,
 				"error": map[string]any{"type": "network", "message": err.Error()}}
 			if encErr := enc.Encode(line); encErr != nil {
-				return encErr
+				return reportWriteErr(rec.ID, encErr)
 			}
 			fmt.Fprintf(app.Stderr, "%d ok, %d failed, aborted on network error\n", okCount, failCount)
 			return wrapTransport(err)
@@ -130,7 +130,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 			if err := enc.Encode(map[string]any{
 				"id": rec.ID, "ok": true, "status": resp.Status, "data": n.Data,
 			}); err != nil {
-				return err
+				return reportWriteErr(rec.ID, err)
 			}
 			continue
 		}
@@ -139,7 +139,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 		if err := enc.Encode(map[string]any{
 			"id": rec.ID, "ok": false, "status": resp.Status, "error": ee,
 		}); err != nil {
-			return err
+			return reportWriteErr(rec.ID, err)
 		}
 	}
 
@@ -149,6 +149,15 @@ func runBulkUpdate(app *App, inputArg string) error {
 			Message: fmt.Sprintf("%d of %d updates failed (per-record report on stdout)", failCount, len(records))}
 	}
 	return nil
+}
+
+// reportWriteErr classifies a failed write of the per-record report after the
+// PUT already went out. A bare encoder error would be read as a usage error
+// ("bad args, safe to re-run"); exit 9 says the mutation happened and only
+// its report is missing, same as the curated `employees update`.
+func reportWriteErr(id json.Number, err error) error {
+	return &ExitError{Code: ExitOutput, Type: "output",
+		Message: fmt.Sprintf("employee %s: the update was sent but its report line could not be written: %v", id, err)}
 }
 
 // parseBulkRecords accepts NDJSON (or any concatenated JSON objects) as well
@@ -165,6 +174,9 @@ func parseBulkRecords(raw []byte) ([]bulkRecord, error) {
 		dec.UseNumber()
 		if err := dec.Decode(&records); err != nil {
 			return nil, usageErr("--input: invalid JSON array: %v", err)
+		}
+		if err := requireNoTrailingData(dec); err != nil {
+			return nil, usageErr("--input: %v (a JSON array must be the whole input; use NDJSON for several records)", err)
 		}
 	} else {
 		dec := json.NewDecoder(bytes.NewReader(trimmed))

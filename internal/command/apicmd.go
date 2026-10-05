@@ -137,7 +137,7 @@ DELETE calls are destructive and require --yes in non-interactive mode.`,
 					// Same decoder as the curated commands: plain Unmarshal
 					// routes every number through float64, silently rewriting
 					// large IDs and exact decimals on a write path.
-					if err := unmarshalPreservingNumbers(raw, &body); err != nil {
+					if body, err = unmarshalObject(raw); err != nil {
 						return usageErr("--input is not a JSON object: %v", err)
 					}
 				}
