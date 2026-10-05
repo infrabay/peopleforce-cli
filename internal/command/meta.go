@@ -167,7 +167,7 @@ every case; an unreadable config reports "config_error" with
 				case resp.Status < 200 || resp.Status > 299:
 					// Probe failed for a non-auth reason (5xx, network path
 					// issue) — exit non-zero so agents don't read "ok".
-					probeErr = classifyStatus(resp.Status, resp.Body)
+					probeErr = classifyResponse(resp)
 				}
 			}
 

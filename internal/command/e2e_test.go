@@ -505,7 +505,9 @@ func TestRetryAfterBeyondCapExitsRateLimited(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, stderr, code := runCLI(t, srv.URL, "employees", "get", "1", "--max-retries", "3", "--verbose")
+	// No --verbose: the retry log is verbose-only, so the exit-6 error itself
+	// has to tell the agent how long to wait.
+	_, stderr, code := runCLI(t, srv.URL, "employees", "get", "1", "--max-retries", "3")
 	if code != ExitRateLimit {
 		t.Errorf("exit = %d, want %d", code, ExitRateLimit)
 	}

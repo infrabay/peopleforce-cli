@@ -314,7 +314,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 			return truncate(wrapTransport(err))
 		}
 		if resp.Status < 200 || resp.Status > 299 {
-			return truncate(classifyStatus(resp.Status, resp.Body))
+			return truncate(classifyResponse(resp))
 		}
 		n := envelope.Normalize(resp.Body, resp.Status)
 
@@ -425,7 +425,7 @@ func runAllPages(app *App, client *httpx.Client, op *registry.Op, path string, b
 
 func renderResponse(app *App, method string, resp *httpx.Response) error {
 	if resp.Status < 200 || resp.Status > 299 {
-		return classifyStatus(resp.Status, resp.Body)
+		return classifyResponse(resp)
 	}
 	n := envelope.Normalize(resp.Body, resp.Status)
 	if n.NotJSON {

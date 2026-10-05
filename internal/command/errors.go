@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/infrabay/peopleforce-cli/internal/httpx"
 	"github.com/infrabay/peopleforce-cli/internal/output"
 )
 
@@ -36,6 +37,24 @@ type ExitError struct {
 }
 
 func (e *ExitError) Error() string { return e.Message }
+
+// classifyResponse maps a non-2xx API response to an ExitError, adding what
+// only the headers carry. A 429 whose Retry-After exceeds the wait the client
+// is willing to do comes back without being retried; the agent then needs to
+// know how long the server asked for, and the retry log that says so is only
+// shown under --verbose.
+func classifyResponse(resp *httpx.Response) *ExitError {
+	e := classifyStatus(resp.Status, resp.Body)
+	if resp.Status == http.StatusTooManyRequests {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if len(ra) > 64 { // a header value is attacker-sized; a delay is not
+				ra = ra[:64]
+			}
+			e.Message = fmt.Sprintf("rate limited (HTTP 429); the server asked to wait (Retry-After: %s) before trying again", ra)
+		}
+	}
+	return e
+}
 
 // classifyStatus maps a non-2xx API response to an ExitError.
 func classifyStatus(status int, body []byte) *ExitError {

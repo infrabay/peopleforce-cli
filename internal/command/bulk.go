@@ -135,7 +135,7 @@ func runBulkUpdate(app *App, inputArg string) error {
 			continue
 		}
 		failCount++
-		ee := classifyStatus(resp.Status, resp.Body)
+		ee := classifyResponse(resp)
 		if err := enc.Encode(map[string]any{
 			"id": rec.ID, "ok": false, "status": resp.Status, "error": ee,
 		}); err != nil {
