@@ -190,3 +190,21 @@ func TestUnknownFormatIsAnError(t *testing.T) {
 		t.Fatal("expected an error for an unknown format")
 	}
 }
+
+// Scalar data takes the table fallback; it must be sanitized like table cells
+// so a C1 control (U+009B is CSI) from API data cannot reach the terminal.
+func TestTableScalarFallbackStripsControls(t *testing.T) {
+	var out bytes.Buffer
+	body := "{\"data\":\"a\u009b31mb\u001b[0m\"}"
+	if err := Render(&out, norm(body, nil), Options{Format: "table"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range out.String() {
+		if (r >= 0x80 && r <= 0x9f) || r == 0x1b {
+			t.Errorf("control %U survived: %q", r, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "a31mb") {
+		t.Errorf("visible text lost: %q", out.String())
+	}
+}

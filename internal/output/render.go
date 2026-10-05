@@ -311,7 +311,7 @@ func renderTable(w io.Writer, n envelope.Normalized) error {
 	if err := decode(&items); err != nil {
 		var single map[string]any
 		if err := decode(&single); err != nil {
-			_, werr := fmt.Fprintf(w, "%s\n", n.Data)
+			_, werr := fmt.Fprintf(w, "%s\n", sanitizeRaw(string(n.Data)))
 			return werr
 		}
 		items = []map[string]any{single}
