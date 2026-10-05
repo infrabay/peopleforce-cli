@@ -1,0 +1,10 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Extends the org preset local>infrabay/renovate (grouped Go minor/patch and GitHub Actions updates, pinned action digests, and the `# renovate:`-annotated *_VERSION tool pins in the workflows: golangci-lint, govulncheck). The vendored OpenAPI spec is not a dependency Renovate can track: it is refreshed with `make update-spec`.",
+  "extends": [
+    "local>infrabay/renovate"
+  ],
+  "ignorePaths": [
+    "testdata/**"
+  ]
+}

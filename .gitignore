@@ -3,3 +3,6 @@
 
 # local Claude Code state
 .claude/
+
+# GoReleaser output
+/dist/

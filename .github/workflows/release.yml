@@ -1,0 +1,49 @@
+name: release
+
+# Publishes a release when a semantic-version tag (v*) is pushed: the test
+# workflow runs against the tagged commit first, then GoReleaser builds the
+# binaries, uploads them with a SHA256 checksum file to the GitHub release,
+# and commits the Homebrew cask to infrabay/homebrew-tap. Secret:
+#   HOMEBREW_TAP_GITHUB_TOKEN - fine-grained token limited to the
+#                               infrabay/homebrew-tap repository with
+#                               Contents: read and write. GITHUB_TOKEN cannot
+#                               push to another repository.
+# It lives in the 'release' environment (deployment tags v*), so only a tag
+# push can read it.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  goreleaser:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # GoReleaser reads the previous tag and the commit history.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          # The newest v2 release; a major goreleaser upgrade needs a commit.
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

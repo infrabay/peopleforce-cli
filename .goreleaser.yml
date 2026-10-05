@@ -1,0 +1,78 @@
+# GoReleaser config: cross-platform binaries of the `peopleforce` CLI, archived
+# per OS/arch with a SHA256 checksum file, plus a Homebrew cask committed to
+# infrabay/homebrew-tap. Runs from .github/workflows/release.yml on a v* tag;
+# .github/workflows/test.yml runs `check` and a snapshot build on every PR.
+version: 2
+
+project_name: peopleforce-cli
+
+before:
+  hooks:
+    # A check, not a fix: this runs after GoReleaser's dirty-tree check, so a
+    # plain `go mod tidy` would silently build the release from a go.mod/go.sum
+    # that differs from the tagged commit.
+    - go mod tidy -diff
+
+builds:
+  - id: peopleforce
+    main: ./cmd/peopleforce
+    binary: peopleforce
+    env:
+      - CGO_ENABLED=0
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    flags:
+      - -trimpath
+    # Same variables the Makefile sets; the tag keeps its "v", matching what
+    # `make build` (git describe) and `go install ...@vX.Y.Z` report.
+    ldflags:
+      - -s -w
+      - -X github.com/infrabay/peopleforce-cli/internal/command.Version={{ .Tag }}
+      - -X github.com/infrabay/peopleforce-cli/internal/command.Commit={{ .ShortCommit }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+
+homebrew_casks:
+  - name: peopleforce
+    binaries:
+      - peopleforce
+    repository:
+      owner: infrabay
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
+    directory: Casks
+    homepage: https://github.com/infrabay/peopleforce-cli
+    description: CLI for the PeopleForce HR API, built for AI agents and humans
+    # A pre-release tag (v1.2.0-rc.1) publishes binaries but leaves the cask
+    # on the last stable version.
+    skip_upload: auto
+    hooks:
+      post:
+        # The binaries are not notarized, so Gatekeeper would quarantine the
+        # downloaded binary and refuse to run it.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/peopleforce"]
+          end
