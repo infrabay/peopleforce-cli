@@ -138,3 +138,16 @@ func TestSanitizeRequestTarget(t *testing.T) {
 		}
 	}
 }
+
+// "." and ".." survive PathEscape and are resolved as dot segments on the way
+// to the API, retargeting the request at the parent resource.
+func TestBuildPathRejectsDotSegments(t *testing.T) {
+	for _, v := range []string{".", ".."} {
+		if got, err := BuildPath("/teams/{team_id}/team_members/{id}", map[string]string{"team_id": "3", "id": v}); err == nil {
+			t.Errorf("BuildPath accepted id %q and built %s", v, got)
+		}
+	}
+	if _, err := BuildPath("/employees/{id}", map[string]string{"id": "a.b"}); err != nil {
+		t.Errorf("a value merely containing a dot is fine, got %v", err)
+	}
+}

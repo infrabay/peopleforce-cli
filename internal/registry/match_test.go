@@ -61,3 +61,22 @@ func TestMatchFindsDestructiveOps(t *testing.T) {
 		}
 	}
 }
+
+// The router decodes and normalises the path before routing, so each of these
+// reaches POST /employees/{id}/terminate on the server. The guard must see the
+// same route, or `api call` terminates an employee without --yes.
+func TestMatchSeesThroughPathSpellings(t *testing.T) {
+	for _, path := range []string{
+		"/employees/1/%74erminate",
+		"/employees//1/terminate",
+		"/employees/1/./terminate",
+		"/employees/1/x/../terminate",
+		"/employees/1/terminate.json",
+		"/employees/1/terminate.json?reason=x",
+	} {
+		op, ok := Match("POST", path)
+		if !ok || !op.Destructive {
+			t.Errorf("POST %s: matched=%v, want the destructive /employees/{employee_id}/terminate", path, ok)
+		}
+	}
+}

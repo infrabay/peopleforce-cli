@@ -6,7 +6,11 @@
 // `api ops`, and the golden snapshot — snake_case, stable for agents.
 package registry
 
-import "strings"
+import (
+	"net/url"
+	pathpkg "path"
+	"strings"
+)
 
 // EnvelopeKind describes the documented response shape of an operation.
 // The runtime normalizer is shape-driven and does not depend on this value;
@@ -122,11 +126,13 @@ func Find(method, path string) (*Op, bool) {
 // The most specific template wins: /employees/terminated and
 // /employees/{employee_id} both accept "/employees/terminated", and picking by
 // table order would make the result depend on where the generator emitted them.
+//
+// The path is matched in the form the API's router will see it, not as typed:
+// this lookup decides whether `api call` demands --yes, and a spelling that
+// differs only on the wire (%74erminate, //, /./, a .json format suffix)
+// must not route to terminate while dodging the guard.
 func Match(method, path string) (*Op, bool) {
-	if i := strings.IndexByte(path, '?'); i >= 0 {
-		path = path[:i]
-	}
-	got := strings.Split(strings.Trim(path, "/"), "/")
+	got := strings.Split(strings.Trim(canonicalPath(path), "/"), "/")
 
 	var best *Op
 	bestLiterals := -1
@@ -158,4 +164,22 @@ func Match(method, path string) (*Op, bool) {
 		}
 	}
 	return best, best != nil
+}
+
+// canonicalPath reduces a request path to the route a Rails-style router
+// resolves it to: query dropped, percent-escapes decoded once (as the server
+// decodes them), repeated slashes and dot segments collapsed, and the
+// optional format suffix of the last segment (terminate.json) removed.
+func canonicalPath(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	if u, err := url.PathUnescape(p); err == nil {
+		p = u
+	}
+	p = pathpkg.Clean("/" + p)
+	if dot := strings.LastIndexByte(p, '.'); dot > strings.LastIndexByte(p, '/')+1 {
+		p = p[:dot]
+	}
+	return p
 }

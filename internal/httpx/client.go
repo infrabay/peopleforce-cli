@@ -65,6 +65,12 @@ func BuildPath(template string, values map[string]string) (string, error) {
 		if !strings.Contains(out, placeholder) {
 			return "", fmt.Errorf("path template %q has no parameter %q", template, name)
 		}
+		// PathEscape leaves dots alone, and "." or ".." is resolved as a dot
+		// segment by any proxy or router on the way: `teams members remove
+		// 3 ..` would DELETE /teams/3, the whole team, not one membership.
+		if v == "." || v == ".." {
+			return "", fmt.Errorf("%q is not a valid value for {%s}", v, name)
+		}
 		out = strings.ReplaceAll(out, placeholder, url.PathEscape(v))
 	}
 	if i := strings.IndexByte(out, '{'); i >= 0 {
