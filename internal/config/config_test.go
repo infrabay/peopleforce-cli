@@ -300,6 +300,26 @@ func TestLoadMalformedTOMLNamesPath(t *testing.T) {
 	}
 }
 
+// The TOML parser quotes the token it choked on, and the likeliest one in this
+// file is an unquoted API key: the error goes to stderr and into `auth
+// status` output, so it must locate the problem without repeating it.
+func TestLoadMalformedTOMLDoesNotEchoTheKey(t *testing.T) {
+	dir := isolate(t)
+	const secret = "pfSuperSecretHrToken"
+	writeConfig(t, dir, "[profiles.default]\napi_key = "+secret+"\n")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load succeeded on malformed TOML")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error leaks the unquoted key: %q", err)
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error %q does not say which line is broken", err)
+	}
+}
+
 // os.IsNotExist only matches ENOENT, so without the dedicated explanation a
 // file squatting on the config directory kills every command with a bare
 // "not a directory".

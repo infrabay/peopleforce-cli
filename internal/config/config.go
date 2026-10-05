@@ -107,9 +107,25 @@ func Load() (File, error) {
 		return f, explainPathError(path, err)
 	}
 	if err := toml.Unmarshal(data, &f); err != nil {
-		return f, fmt.Errorf("parsing %s: %w", path, err)
+		return f, parseError(path, err)
 	}
 	return f, nil
+}
+
+// parseError reports where the config file is broken without quoting it. The
+// TOML parser's message echoes the offending token, and in this file that is
+// typically an API key someone forgot to quote, so passing it through would
+// print the key to stderr and into `auth status`'s config_error.
+func parseError(path string, err error) error {
+	var pe toml.ParseError
+	if errors.As(err, &pe) {
+		where := fmt.Sprintf("line %d", pe.Position.Line)
+		if pe.LastKey != "" {
+			where += fmt.Sprintf(", after key %q", pe.LastKey)
+		}
+		return fmt.Errorf("parsing %s: invalid TOML at %s (string values such as api_key must be quoted)", path, where)
+	}
+	return fmt.Errorf("parsing %s: invalid TOML", path)
 }
 
 // Save writes the config file with owner-only permissions (it holds keys).
