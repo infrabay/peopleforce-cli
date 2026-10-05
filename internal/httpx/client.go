@@ -112,11 +112,20 @@ func (c *Client) httpClient() *http.Client {
 // custom header, so an open redirect on the API host — or any on-path
 // attacker when the base URL is http:// — would otherwise hand a full-scope
 // HR token to whatever host the redirect names.
+//
+// The key is not the only thing worth stealing: a 307/308 keeps the method
+// and resends the body, which for an employee create or a document upload is
+// the HR record itself. Only GET and HEAD carry no body, so any other method
+// stops at a cross-origin redirect instead of following it.
 func dropCredentialsCrossHost(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
 	if req.URL.Host != via[0].URL.Host || req.URL.Scheme != via[0].URL.Scheme {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			return fmt.Errorf("refusing to follow a redirect to another origin (%s://%s) for %s: it would resend the request body there",
+				req.URL.Scheme, req.URL.Host, req.Method)
+		}
 		req.Header.Del(authHeader)
 	}
 	return nil
