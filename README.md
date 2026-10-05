@@ -75,37 +75,50 @@ whichever tenant the environment happens to hold, but it also must not veto a
 key that outranks the config file. `PEOPLEFORCE_API_URL` overrides the
 base URL. `auth status` emits its JSON envelope even when it fails — a config
 file it cannot parse is reported as `config_error` with
-`"authenticated": false` (exit 2), which is precisely when a self-diagnosing
-agent needs it.
+`"authenticated": false` (exit 2), and a probe that cannot reach the API as
+`probe_error` (exit 8), which is precisely when a self-diagnosing agent needs
+it.
 
 ## Output contract (for agents)
 
 - **stdout**: data only. JSON by default, always `{"data": ..., "meta": {...}}`.
   Lists carry pagination in `meta` (`page`, `pages`, `count`, `items`).
 - **stderr**: diagnostics only; errors are structured
-  `{"error": {"type", "status", "message", "detail"}}`.
+  `{"error": {"type", "status", "message", "detail"}}` (plain sentences under
+  `--output table`).
 - **Exit codes**: `0` ok · `2` usage · `3` auth · `4` not found ·
   `5` validation · `6` rate-limited · `7` server error · `8` network ·
-  `9` the request succeeded but its response could not be rendered (never
-  safe to blindly re-run: a mutation already happened).
+  `9` the request succeeded but its response could not be read or rendered
+  (never safe to blindly re-run: a mutation already happened). A write whose
+  2xx body is cut off, oversized or not JSON exits 9; the same on a GET exits
+  8 (cut off) or 7 (not JSON), since retrying a read is safe. An empty body,
+  such as a 204, is not an error.
 - Built-in filtering (no external jq): `--jq '.data[] | {id}'`, `--fields id,email`,
   `--raw`/`-r` for unquoted string output (like `jq -r`); with both, `--jq` wins.
+  An invalid `--jq`, including an unknown function, exits 2 before any
+  request is sent. Integers keep every digit, beyond 2^53 too.
 - Other formats: `--output table` (humans), `--output ndjson` (streaming).
 - Never interactive without a TTY. Destructive operations (deletes,
-  `employees terminate`) require `--yes`; every mutation supports `--dry-run`.
+  `employees terminate`) require `--yes`; every mutation supports `--dry-run`,
+  including `auth login`, whose preview names the profile and config path but
+  never shows the key.
 - Lists: `--page N` (page size is fixed server-side) or `--all`
   (auto-paginates, capped by `--max-pages`, default 20; empty results are `[]`,
   never `null`). `--all` reports per-page progress on stderr, replaces
   `meta.page` with `meta.fetched` (the total it collected), and drops a page
   that merely replays page 1 — a backend ignoring `?page=` never inflates the
-  result silently.
+  result silently. When the pagination metadata says more pages exist than
+  the replay let it keep, the result is marked truncated (exit 0).
 - An `--all` run that fails partway still writes the pages it did fetch to
   stdout, marked `"truncated": true` with `"next_page": N` in `meta`, while
-  the exit code stays that of the failure (7 for a 5xx, 8 for a transport
-  error) and the error itself goes to stderr. Keep that partial result and
+  the exit code stays that of the failure and the error itself goes to
+  stderr: 8 for a transport error, 7 for a 5xx, and 7 for a later page that
+  is not a list (`null`, an object, an empty or non-JSON body) or is empty
+  while its own metadata says more pages follow. Keep that partial result and
   re-run with `--all --page N` to fetch the rest; the two concatenate. A run
-  that fails on its first page writes nothing. `--page N` alongside `--all`
-  is the start page and `--max-pages` caps how many pages that run fetches.
+  whose first request fails writes nothing. `--page N` alongside `--all` is
+  the start page and `--max-pages` (1 or more) caps how many pages that run
+  fetches.
 - The same `"truncated"` / `"next_page"` markers appear whenever `--max-pages`
   cuts a run short, which exits 0 because the cap is deliberate. Any `--all`
   envelope without them covered everything the endpoint had.
@@ -114,13 +127,18 @@ agent needs it.
   run truncated by `--max-pages` also exits 0 — stdout and the exit code then
   look exactly like a complete run, and only the stderr note reveals the cap.
   Use `--output json` whenever completeness has to be verifiable.
-- `--output ndjson` streams one data item per line and omits `meta` entirely;
-  use the default `--output json` when you need pagination info.
+- `--output ndjson` streams one compact data item per line and omits `meta`
+  entirely; use the default `--output json` when you need pagination info.
+- Terminal control characters in API data never reach the terminal raw: JSON,
+  ndjson and `--jq` output escape them (`\u001b`, `\u009b`), and `table` and
+  `--raw` strip them.
 - Other globals: `--timeout` (default 30s) and `--verbose` (log requests and
   retries to stderr).
 - 429s are retried automatically honoring `Retry-After` in both RFC forms
-  (`--max-retries`, default 3). Transient 5xx responses are retried only for
-  idempotent methods — a POST is never re-sent (duplicate-write risk).
+  (`--max-retries`, default 3) for waits of up to 60 seconds. A server that
+  asks for longer gets no early retry: the run exits 6 and the error quotes
+  its `Retry-After`. Transient 5xx responses are retried only for idempotent
+  methods — a POST is never re-sent (duplicate-write risk).
 - Meta commands (`commands`, `version`, `auth status`, `api ops/describe`)
   emit the same `{"data": ...}` envelope and honor `--jq`/`--fields`/`--output`.
   Plain-text exceptions: `config path`, `agents-md`, `skill install`.
@@ -191,7 +209,7 @@ peopleforce leave requests create --set employee_id:=7 --set leave_type_id:=2 \
 # custom fields are set flat by internal_name (see `peopleforce employee-fields list`)
 peopleforce employees update 123 --set github=octocat --set address.city=Kyiv
 
-# whole body from a file or stdin
+# whole body from a file or stdin: exactly one JSON object, nothing after it
 peopleforce employees create --input @new-employee.json
 
 # file uploads

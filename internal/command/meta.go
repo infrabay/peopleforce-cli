@@ -101,8 +101,9 @@ the key is passed via the global --api-key flag, or read from stdin with
 		Long: `Prints the resolved credential source (flag > env > config file) and
 probes the API with a cheap request. Exit code 0 when authenticated,
 3 when the key is missing or rejected, 2 when the config file itself cannot
-be read — agents use this to self-diagnose. The JSON envelope is emitted in
-every case; an unreadable config reports "config_error" with
+be read, 8 when the API cannot be reached — agents use this to self-diagnose.
+The JSON envelope is emitted in every case; an unreadable config reports
+"config_error" and an unreachable API "probe_error", both with
 "authenticated": false.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

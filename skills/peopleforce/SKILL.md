@@ -30,12 +30,14 @@ Verify before doing work:
 
 ```bash
 peopleforce auth status   # 0 = authenticated, 3 = missing/rejected key,
-                          # 2 = the config file itself could not be read
+                          # 2 = the config file itself could not be read,
+                          # 8 = the API could not be reached
 ```
 
 `auth status` prints its envelope even when it exits non-zero: an unreadable
-config reports `config_error` alongside `"authenticated": false`, so the
-diagnosis is machine-readable exactly when something is broken.
+config reports `config_error`, an unreachable API `probe_error`, both
+alongside `"authenticated": false`, so the diagnosis is machine-readable
+exactly when something is broken.
 
 A key passed in argv is visible to `ps`, to `/proc/<pid>/cmdline`, and to CI
 logs under `set -x`. Use the environment variable, or pipe the key in with
@@ -63,7 +65,10 @@ hunting for a new token before checking the allowlist.
 - stderr: diagnostics; errors are structured `{"error": {"type", "status", "message", "detail"}}`.
 - Exit codes: `0` ok · `2` usage · `3` auth · `4` not found · `5` validation ·
   `6` rate-limited · `7` server error · `8` network · `9` the response could
-  not be rendered (the request already succeeded — do not blindly retry).
+  not be read or rendered (the request already succeeded — do not blindly
+  retry; check whether the change was applied). Reads never exit 9: a GET
+  whose body is cut off exits 8 and one whose body is not JSON exits 7, and
+  both are safe to retry.
 
 Trim tokens with the built-in jq (no external jq needed) or field projection:
 
@@ -73,14 +78,17 @@ peopleforce employees list --fields id,full_name,email
 peopleforce employees get 123 --jq .data.email --raw   # -r: strings without quotes
 ```
 
-When both are given, `--jq` wins and `--fields` is ignored. A `--fields`
+When both are given, `--jq` wins and `--fields` is ignored. An invalid `--jq`
+(syntax or an unknown function) exits 2 before any request is sent. A `--fields`
 name that matches nothing in the response is reported on stderr — the data
 still renders, so check stderr rather than assuming empty objects mean empty
 records. Note `--jq` produces JSON regardless of `--output`.
 
 Other globals: `--timeout` (default 30s), `--verbose` (log requests and
 retries to stderr). `--output ndjson` omits `meta`; `--all` replaces
-`meta.page` with `meta.fetched`.
+`meta.page` with `meta.fetched`. Control characters in API data are escaped
+in JSON output and stripped from `table`/`--raw`, so they never reach a
+terminal raw.
 
 ## Discovering commands
 
@@ -156,22 +164,31 @@ Note: `employees list` returns a slim record without `fields`; use
 
 - Request bodies: typed flags for simple fields, `--set key=value` /
   `--set key:=json` for anything, `--input @file.json` or `--input -` (stdin)
-  for whole bodies. Dots nest: `--set address.city=Kyiv`.
+  for whole bodies. Dots nest: `--set address.city=Kyiv`. `--input` must be
+  exactly one JSON object — `null`, an array, or anything after the object
+  is a usage error (exit 2) and nothing is sent.
 - Always preview mutations first with `--dry-run` (prints method/URL/body,
-  sends nothing).
+  sends nothing). `auth login --dry-run` names the profile and config path
+  and never prints the key.
 - Destructive operations (deletes, `employees terminate`) require `--yes`
   in non-interactive mode — there are no interactive prompts without a TTY.
 
 ## Pagination and limits
 
 - Lists take `--page N` (page size is fixed server-side). `--all` follows
-  every page (capped by `--max-pages`, default 20); empty results are `[]`.
+  every page (capped by `--max-pages`, default 20, minimum 1); empty results
+  are `[]`.
 - An `--all` run that fails partway still hands over what it collected: the
   pages already fetched are on stdout with `"truncated": true` and
-  `"next_page": N` in `meta`, and the exit code is the failure's own (7, 8).
-  Keep that data and re-run with `--all --page N` for the rest — the two
-  results concatenate. Only a run that failed on its very first page prints
-  nothing. `--output ndjson` drops `meta`, so truncation is invisible there:
+  `"next_page": N` in `meta`, and the exit code is the failure's own: 8 for
+  a transport error, 7 for a 5xx or for a later page that is not a list
+  (`null`, an object, an empty or non-JSON body) or is empty while its own
+  metadata says more pages follow. Keep that data and re-run with
+  `--all --page N` for the rest — the two results concatenate. Only a run
+  whose first request failed prints nothing. If the endpoint turns out to
+  ignore `?page=` (later pages replay page 1), the replays are dropped, and
+  the result is marked truncated (exit 0) when the metadata says more pages
+  exist than could be kept. `--output ndjson` drops `meta`, so truncation is invisible there:
   and so do `table` and `--jq`. `--max-pages` limits pages fetched by that
   run, not the page number, and a run cut short by the cap carries the same
   `"truncated"` / `"next_page"` markers while exiting 0. Under the default
@@ -180,8 +197,10 @@ Note: `employees list` returns a slim record without `fields`; use
   signal on stdout at all, so use json when it matters.
 - Team membership comes only from `teams list` (no GET /teams/{id}), and
   `teams create` cannot set members — use `teams members add`.
-- 429 rate limits are retried automatically (honoring Retry-After) up to
-  `--max-retries` (default 3); exhaustion exits with code 6. Transient 5xx
+- 429 rate limits are retried automatically (honoring Retry-After of up to
+  60 seconds) up to `--max-retries` (default 3); exhaustion, or a server
+  asking to wait longer than 60s, exits with code 6 and the error quotes the
+  server's Retry-After — wait that long before trying again. Transient 5xx
   are retried only for idempotent methods — POSTs are never re-sent.
 
 ## Notes
