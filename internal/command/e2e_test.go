@@ -457,3 +457,62 @@ func TestMissingAPIKeyIsAuthExit(t *testing.T) {
 		t.Errorf("exit = %d, want %d; stderr: %s", code, ExitAuth, stderr)
 	}
 }
+
+// A 2xx whose body dies mid-stream on a mutation means the write happened:
+// exit 9 ("do not re-run"), not exit 8, which invites a duplicate create. The
+// same failure on a GET is a safe-to-retry network error.
+func TestTruncatedSuccessBodyExitCode(t *testing.T) {
+	status := "201 Created"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(buf, "HTTP/1.1 %s\r\nContent-Length: 100\r\n\r\n{\"data\":", status)
+		buf.Flush()
+	}))
+	defer srv.Close()
+
+	_, stderr, code := runCLI(t, srv.URL, "departments", "create", "--set", "name=Eng")
+	if code != ExitOutput {
+		t.Errorf("POST 201: exit = %d, want %d; stderr: %s", code, ExitOutput, stderr)
+	}
+	for _, want := range []string{`"output"`, "HTTP 201", "unexpected EOF", "do not blindly re-run"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q: %s", want, stderr)
+		}
+	}
+
+	status = "200 OK"
+	if _, _, code := runCLI(t, srv.URL, "employees", "get", "1"); code != ExitNetwork {
+		t.Errorf("GET 200: exit = %d, want %d", code, ExitNetwork)
+	}
+	status = "500 Internal Server Error"
+	if _, _, code := runCLI(t, srv.URL, "departments", "create", "--set", "name=Eng"); code != ExitNetwork {
+		t.Errorf("POST 500: exit = %d, want %d", code, ExitNetwork)
+	}
+}
+
+// Retry-After beyond the 60s cap exits 6 straight away instead of retrying
+// early, and --verbose shows how long the server asked to wait.
+func TestRetryAfterBeyondCapExitsRateLimited(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(429)
+	}))
+	defer srv.Close()
+
+	_, stderr, code := runCLI(t, srv.URL, "employees", "get", "1", "--max-retries", "3", "--verbose")
+	if code != ExitRateLimit {
+		t.Errorf("exit = %d, want %d", code, ExitRateLimit)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if !strings.Contains(stderr, "Retry-After: 120") {
+		t.Errorf("stderr does not say what the server asked for: %s", stderr)
+	}
+}

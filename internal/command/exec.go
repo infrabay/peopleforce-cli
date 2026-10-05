@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -521,6 +522,16 @@ func wrapTransport(err error) error {
 	var ee *ExitError
 	if errors.As(err, &ee) {
 		return ee
+	}
+	// The server sent a status line but the body could not be read. After a
+	// 2xx to a mutation the write has already happened, so exit 8 ("network,
+	// safe to retry") would invite a duplicate; exit 9 says not to re-run.
+	// A GET/HEAD or a non-2xx stays a retryable network failure.
+	var rre *httpx.ResponseReadError
+	if errors.As(err, &rre) && rre.Status >= 200 && rre.Status <= 299 &&
+		rre.Method != http.MethodGet && rre.Method != http.MethodHead {
+		return &ExitError{Code: ExitOutput, Type: "output",
+			Message: fmt.Sprintf("the API accepted the request (HTTP %d) but its response could not be read: %v — do not blindly re-run; check whether the change was applied", rre.Status, rre.Err)}
 	}
 	return &ExitError{Code: ExitNetwork, Type: "network", Message: err.Error()}
 }

@@ -30,23 +30,47 @@ func TestRetryDelayDoesNotOverflowAtHighAttempts(t *testing.T) {
 	}
 }
 
-// Retry-After wins over the exponential schedule, but a server is free to
-// suggest an hour; honoring that verbatim would park the CLI on a single 429.
-func TestRetryDelayClampsOversizedRetryAfter(t *testing.T) {
-	const maxDelay = 30 * time.Second
+// Retry-After wins over the exponential schedule and is honoured up to the
+// 60s cap, not the 30s backoff cap: a 429 with Retry-After: 45 retried after
+// 30s would just be rejected again and burn an attempt.
+func TestRetryDelayHonoursRetryAfterUpToCap(t *testing.T) {
 	cases := []struct {
 		form  string
 		value string
+		want  time.Duration
+		slack time.Duration
 	}{
-		{"delta-seconds", "3600"},
-		{"http-date", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)},
+		{"delta-seconds", "45", 45 * time.Second, 0},
+		{"delta-seconds at the cap", "60", 60 * time.Second, 0},
+		{"http-date", time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat), 45 * time.Second, 3 * time.Second},
 	}
 	for _, tt := range cases {
 		t.Run(tt.form, func(t *testing.T) {
 			resp := &Response{Header: http.Header{"Retry-After": []string{tt.value}}}
-			if got := retryDelay(resp, 1); got != maxDelay {
-				t.Errorf("delay = %s, want the %s cap", got, maxDelay)
+			got := retryDelay(resp, 1)
+			if got > tt.want || got < tt.want-tt.slack {
+				t.Errorf("delay = %s, want %s", got, tt.want)
+			}
+			if asked, ok := serverDelay(resp); !ok || asked > maxRetryAfter {
+				t.Errorf("serverDelay = %s, %v; want within the cap", asked, ok)
 			}
 		})
+	}
+}
+
+// A Retry-After beyond the cap, however it is written (including values that
+// overflow time.Duration or int64), must read as "longer than the cap" and
+// never as a short or zero delay.
+func TestServerDelayBeyondCap(t *testing.T) {
+	for _, v := range []string{
+		"61", "120", "3600", "9223372037", "9223372036854775807",
+		"99999999999999999999999",
+		time.Now().Add(time.Hour).UTC().Format(http.TimeFormat),
+	} {
+		resp := &Response{Header: http.Header{"Retry-After": []string{v}}}
+		asked, ok := serverDelay(resp)
+		if !ok || asked <= maxRetryAfter {
+			t.Errorf("Retry-After %q: serverDelay = %s, %v; want > %s", v, asked, ok, maxRetryAfter)
+		}
 	}
 }

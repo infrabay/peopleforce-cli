@@ -2,8 +2,12 @@ package httpx
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,5 +187,102 @@ func TestRetryDelayHTTPDate(t *testing.T) {
 	resp.Header.Set("Retry-After", time.Now().Add(-10*time.Second).UTC().Format(http.TimeFormat))
 	if d := retryDelay(resp, 1); d != 0 {
 		t.Errorf("past HTTP-date should clamp to 0, got %v", d)
+	}
+}
+
+// hijackAfterStatus serves a 201 whose body is cut short: the status line and
+// a Content-Length promising more than is ever sent, then the connection dies.
+func hijackAfterStatus(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		fmt.Fprint(buf, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"id\":")
+		buf.Flush()
+	}))
+}
+
+// The status line arrived, so the server answered; only the body is lost. That
+// must not look like a plain network failure, or a committed POST gets re-run.
+func TestDoBodyReadFailureAfterStatusIsResponseReadError(t *testing.T) {
+	srv := hijackAfterStatus(t)
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, APIKey: "k"}
+	_, err := c.Do(context.Background(), Request{Method: "POST", Path: "/departments", Body: []byte(`{}`), ContentType: "application/json"})
+	var rre *ResponseReadError
+	if !errors.As(err, &rre) {
+		t.Fatalf("error = %T %v, want *ResponseReadError", err, err)
+	}
+	if rre.Status != 201 || rre.Method != "POST" {
+		t.Errorf("status/method = %d/%s, want 201/POST", rre.Status, rre.Method)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("underlying error = %v, want unexpected EOF", rre.Err)
+	}
+	var te *TransportError
+	if errors.As(err, &te) {
+		t.Error("must not be a TransportError")
+	}
+}
+
+func TestDoOversizedBodyIsResponseReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		chunk := []byte(strings.Repeat("x", 1<<20))
+		for i := 0; i < int(maxResponseBytes>>20)+2; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, APIKey: "k"}
+	_, err := c.Do(context.Background(), Request{Method: "POST", Path: "/x"})
+	var rre *ResponseReadError
+	if !errors.As(err, &rre) || rre.Status != 201 {
+		t.Fatalf("error = %T %v, want *ResponseReadError with status 201", err, err)
+	}
+}
+
+// Retry-After beyond the cap: no early retry, no sleep, the 429 comes back and
+// the note names what the server asked for.
+func TestDoStopsRetryingWhenRetryAfterExceedsCap(t *testing.T) {
+	for _, v := range []string{"120", "9223372037"} {
+		t.Run(v, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Retry-After", v)
+				w.WriteHeader(429)
+			}))
+			defer srv.Close()
+
+			var notes []string
+			c := &Client{BaseURL: srv.URL, APIKey: "k", MaxRetries: 3,
+				Logf: func(f string, a ...any) { notes = append(notes, fmt.Sprintf(f, a...)) }}
+			start := time.Now()
+			resp, err := c.Do(context.Background(), Request{Method: "GET", Path: "/x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Status != 429 {
+				t.Errorf("status = %d, want the 429 handed back", resp.Status)
+			}
+			if calls.Load() != 1 {
+				t.Errorf("calls = %d, want 1 (no retry)", calls.Load())
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Error("must not sleep")
+			}
+			if !strings.Contains(strings.Join(notes, "\n"), "Retry-After: "+v) {
+				t.Errorf("notes %q do not mention the requested delay", notes)
+			}
+		})
 	}
 }

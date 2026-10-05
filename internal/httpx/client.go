@@ -154,6 +154,14 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	var lastResp *Response
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
+			if asked, ok := serverDelay(lastResp); ok && asked > maxRetryAfter {
+				// Waiting less would just earn another 429; waiting this long
+				// would hang the CLI. Hand the response back (exit 6 for a 429)
+				// and say what the server asked for.
+				c.logf("not retrying: the server asked to wait %s (Retry-After: %s), longer than the %s limit",
+					formatAsked(asked), lastResp.Header.Get("Retry-After"), maxRetryAfter)
+				return lastResp, nil
+			}
 			delay := retryDelay(lastResp, attempt)
 			c.logf("retrying in %s (attempt %d/%d, HTTP %d)", delay, attempt+1, attempts, lastResp.Status)
 			select {
@@ -191,11 +199,14 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		// page comes close to this.
 		respBody, readErr := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBytes+1))
 		httpResp.Body.Close()
+		// The status line is already in hand from here on: the server did
+		// answer, so a failed or oversized body is not a plain network error.
 		if readErr != nil {
-			return nil, &TransportError{Err: readErr}
+			return nil, &ResponseReadError{Status: httpResp.StatusCode, Method: req.Method, Err: readErr}
 		}
 		if int64(len(respBody)) > maxResponseBytes {
-			return nil, &TransportError{Err: fmt.Errorf("response exceeds the %d MiB limit", maxResponseBytes>>20)}
+			return nil, &ResponseReadError{Status: httpResp.StatusCode, Method: req.Method,
+				Err: fmt.Errorf("response exceeds the %d MiB limit", maxResponseBytes>>20)}
 		}
 
 		lastResp = &Response{Status: httpResp.StatusCode, Header: httpResp.Header, Body: respBody}
@@ -217,3 +228,26 @@ type TransportError struct{ Err error }
 
 func (e *TransportError) Error() string { return e.Err.Error() }
 func (e *TransportError) Unwrap() error { return e.Err }
+
+// ResponseReadError reports that the server sent a status line but the body
+// could not be read in full (connection reset, truncated body, over the size
+// limit). It is distinct from TransportError because the request reached the
+// server and may already have taken effect: after a 2xx to a mutation the
+// caller must not tell the user to simply retry.
+type ResponseReadError struct {
+	Status int
+	Method string
+	Err    error
+}
+
+func (e *ResponseReadError) Error() string { return e.Err.Error() }
+func (e *ResponseReadError) Unwrap() error { return e.Err }
+
+// formatAsked renders a Retry-After that may be absurdly large without
+// printing a meaningless multi-century Duration.
+func formatAsked(d time.Duration) string {
+	if d >= hugeRetryAfter {
+		return "an unreasonably long time"
+	}
+	return d.String()
+}
