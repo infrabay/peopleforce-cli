@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -243,33 +243,16 @@ func newSkillCommand(app *App) *cobra.Command {
 drive this CLI: auth, output contract, exit codes, and common recipes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base := ".claude/skills/peopleforce"
+			anchor := "."
 			if global {
 				home, err := os.UserHomeDir()
 				if err != nil {
 					return err
 				}
-				base = filepath.Join(home, ".claude", "skills", "peopleforce")
+				anchor = home
 			}
-			if err := os.MkdirAll(base, 0o755); err != nil {
-				return err
-			}
-			dest := filepath.Join(base, "SKILL.md")
-			// O_NOFOLLOW: the destination is a fixed relative path, and a
-			// repo can carry a symlink there. Following it would let a
-			// cloned repo redirect this write onto ~/.zshrc or a CI config.
-			f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+			dest, err := installSkill(anchor)
 			if err != nil {
-				if errors.Is(err, syscall.ELOOP) {
-					return usageErr("%s is a symlink; refusing to write through it", dest)
-				}
-				return err
-			}
-			if _, err := f.WriteString(agentdocs.SkillMD); err != nil {
-				f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
 				return err
 			}
 			fmt.Fprintf(app.Stderr, "installed %s\n", dest)
@@ -279,6 +262,54 @@ drive this CLI: auth, output contract, exit codes, and common recipes.`,
 	install.Flags().BoolVar(&global, "global", false, "install to ~/.claude/skills instead of the current project")
 	skill.AddCommand(install)
 	return skill
+}
+
+// installSkill writes SKILL.md to <anchor>/.claude/skills/peopleforce/,
+// creating the directories it needs.
+//
+// The path below the anchor is fixed, and a cloned repo can carry a symlink at
+// any step of it: .claude/skills/peopleforce -> ~/.config/fish, or SKILL.md ->
+// ~/.zshrc. Following one would let the repo pick the file this overwrites, so
+// every component is Lstat'ed and a symlink is refused rather than traversed.
+// On unix the final open also carries O_NOFOLLOW, closing the window between
+// that check and the open.
+func installSkill(anchor string) (string, error) {
+	dir := anchor
+	for _, part := range []string{".claude", "skills", "peopleforce"} {
+		dir = filepath.Join(dir, part)
+		fi, err := os.Lstat(dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				return "", err
+			}
+		case err != nil:
+			return "", err
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return "", usageErr("%s is a symlink; refusing to write through it", dir)
+		case !fi.IsDir():
+			return "", usageErr("%s exists and is not a directory", dir)
+		}
+	}
+	dest := filepath.Join(dir, "SKILL.md")
+	if fi, err := os.Lstat(dest); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		return "", usageErr("%s is a symlink; refusing to write through it", dest)
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|oNoFollow, 0o644)
+	if err != nil {
+		if isSymlinkLoop(err) {
+			return "", usageErr("%s is a symlink; refusing to write through it", dest)
+		}
+		return "", err
+	}
+	if _, err := f.WriteString(agentdocs.SkillMD); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return dest, nil
 }
 
 func newAgentsMDCommand(app *App) *cobra.Command {

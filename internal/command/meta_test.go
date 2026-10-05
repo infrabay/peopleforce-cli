@@ -68,6 +68,43 @@ func TestSkillInstallRefusesToFollowSymlink(t *testing.T) {
 	}
 }
 
+// O_NOFOLLOW only guards the last component: a repo can instead symlink the
+// skill directory itself and have SKILL.md land in any directory it names.
+func TestSkillInstallRefusesSymlinkedParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	const original = "someone else's skill\n"
+	elsewhere := filepath.Join(root, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, "SKILL.md"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(root, ".claude", "skills", "peopleforce")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stderr, code := runCLI(t, "", "skill", "install")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "symlink") {
+		t.Errorf("stderr should explain the refusal, got: %q", stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(elsewhere, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Errorf("the file behind the symlinked directory was overwritten: %q", got)
+	}
+}
+
 func TestConfigPathPrintsResolvedLocation(t *testing.T) {
 	stdout, stderr, code := runCLI(t, "", "config", "path")
 	if code != 0 {
