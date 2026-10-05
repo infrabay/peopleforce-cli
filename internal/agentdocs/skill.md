@@ -114,7 +114,7 @@ peopleforce employees documents upload 42 --document @contract.pdf \
 
 # Bulk-update many employees in ONE run (NDJSON in, NDJSON report out)
 printf '%s\n' \
-  '{"id": 8321, "set": {"github": "kam1kaze"}}' \
+  '{"id": 8321, "set": {"github": "octocat"}}' \
   '{"id": 8322, "set": {"github": "octocat"}}' \
   | peopleforce employees bulk-update --input -
 # report line per record: {"id":8321,"ok":true,"status":200,"data":{...updated record...}}
@@ -130,7 +130,7 @@ key). Round-trip:
 
 ```bash
 peopleforce employee-fields list --jq '.data[] | {internal_name, name, type}'  # find internal_name
-peopleforce employees update 8321 --set github=kam1kaze                        # write: flat key
+peopleforce employees update 8321 --set github=octocat                        # write: flat key
 peopleforce employees get 8321 --jq '.data.fields.github.value' --raw          # read: nested
 ```
 

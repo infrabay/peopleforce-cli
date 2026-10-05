@@ -49,7 +49,7 @@ func TestBulkUpdateReportsPerRecord(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
 	os.WriteFile(input, []byte(
-		`{"id": 8321, "set": {"github": "kam1kaze"}}
+		`{"id": 8321, "set": {"github": "octocat"}}
 {"id": 8322, "set": {"github": ""}}
 {"id": 8323, "set": {"github": "octocat"}}
 `), 0o644)
@@ -61,7 +61,7 @@ func TestBulkUpdateReportsPerRecord(t *testing.T) {
 	if len(paths) != 3 || paths[0] != "PUT /employees/8321" || paths[1] != "PUT /employees/8322" || paths[2] != "PUT /employees/8323" {
 		t.Errorf("requests = %v", paths)
 	}
-	if bodies[0] != `{"github":"kam1kaze"}` {
+	if bodies[0] != `{"github":"octocat"}` {
 		t.Errorf("body[0] = %s", bodies[0])
 	}
 
@@ -115,7 +115,7 @@ func TestBulkUpdateDryRunSendsNothing(t *testing.T) {
 
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
-	os.WriteFile(input, []byte(`{"id": 8321, "set": {"github": "kam1kaze"}}`), 0o644)
+	os.WriteFile(input, []byte(`{"id": 8321, "set": {"github": "octocat"}}`), 0o644)
 
 	stdout, _, code := runCLI(t, srv.URL, "employees", "bulk-update", "--input", "@"+input, "--dry-run")
 	if code != 0 {
@@ -146,7 +146,7 @@ func TestBulkUpdateValidatesRecords(t *testing.T) {
 
 func TestJQRawOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":{"id":1,"github":"kam1kaze"}}`)
+		fmt.Fprint(w, `{"data":{"id":1,"github":"octocat"}}`)
 	}))
 	defer srv.Close()
 
@@ -154,13 +154,13 @@ func TestJQRawOutput(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	if stdout != "kam1kaze\n" {
-		t.Errorf("raw jq output = %q, want %q", stdout, "kam1kaze\n")
+	if stdout != "octocat\n" {
+		t.Errorf("raw jq output = %q, want %q", stdout, "octocat\n")
 	}
 
 	// Without --raw the string stays JSON-quoted.
 	stdout, _, _ = runCLI(t, srv.URL, "employees", "get", "1", "--jq", ".data.github")
-	if stdout != "\"kam1kaze\"\n" {
+	if stdout != "\"octocat\"\n" {
 		t.Errorf("quoted jq output = %q", stdout)
 	}
 }
@@ -210,7 +210,7 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "updates.jsonl")
 	os.WriteFile(input, []byte(
-		`{"id": 8321, "set": {"github": "kam1kaze"}}
+		`{"id": 8321, "set": {"github": "octocat"}}
 {"id": 8322, "set": {"github": "octocat"}}
 {"id": 8323, "set": {"github": "hubot"}}
 `), 0o644)
@@ -247,7 +247,7 @@ func TestBulkUpdateAbortsRunOnNetworkFailure(t *testing.T) {
 // README and SKILL.md both teach piping records in, so the "-" arm has to
 // reach the same parser as @file.
 func TestBulkUpdateReadsRecordsFromStdin(t *testing.T) {
-	stdin := `{"id": 8321, "set": {"github": "kam1kaze"}}` + "\n"
+	stdin := `{"id": 8321, "set": {"github": "octocat"}}` + "\n"
 	stdout, stderr, code := runWithStdin(t, "", stdin, "https://api.example.test/v3",
 		"employees", "bulk-update", "--input", "-", "--dry-run")
 	if code != 0 {
@@ -263,7 +263,7 @@ func TestBulkUpdateReadsRecordsFromStdin(t *testing.T) {
 	if lines[0]["url"] != "https://api.example.test/v3/employees/8321" {
 		t.Errorf("preview url = %v", lines[0]["url"])
 	}
-	if body, _ := lines[0]["body"].(map[string]any); body == nil || body["github"] != "kam1kaze" {
+	if body, _ := lines[0]["body"].(map[string]any); body == nil || body["github"] != "octocat" {
 		t.Errorf("preview body = %v", lines[0]["body"])
 	}
 	if !strings.Contains(stderr, "1 record(s), nothing sent") {

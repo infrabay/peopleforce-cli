@@ -1,8 +1,15 @@
 # peopleforce-cli
 
+[![test](https://github.com/infrabay/peopleforce-cli/actions/workflows/test.yml/badge.svg)](https://github.com/infrabay/peopleforce-cli/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/infrabay/peopleforce-cli)](https://github.com/infrabay/peopleforce-cli/releases)
+[![license](https://img.shields.io/github/license/infrabay/peopleforce-cli)](LICENSE)
+
 A command-line client for the [PeopleForce](https://peopleforce.io) HR API,
 designed to be driven by AI agents (Claude Code, Codex) as comfortably as by
 humans.
+
+> This is an independent, community project. It is not affiliated with,
+> endorsed by, or supported by PeopleForce.
 
 ```bash
 peopleforce employees list --status active --jq '.data[] | {id, email}'
@@ -12,9 +19,26 @@ peopleforce api call GET '/recruitment/vacancies?page=1'
 
 ## Install
 
-Requires Go 1.26+.
+Homebrew (macOS, Linux):
 
 ```bash
+brew install infrabay/tap/peopleforce
+```
+
+With Go (the version in `go.mod` or newer):
+
+```bash
+go install github.com/infrabay/peopleforce-cli/cmd/peopleforce@latest
+```
+
+Or download a binary for Linux, macOS or Windows from
+[Releases](https://github.com/infrabay/peopleforce-cli/releases) and check it
+against the `*_checksums.txt` file published with it.
+
+From source:
+
+```bash
+git clone https://github.com/infrabay/peopleforce-cli && cd peopleforce-cli
 make build          # ./peopleforce
 make install        # into GOPATH/bin
 ```
@@ -203,3 +227,14 @@ automatically; promote them to curated commands in
 make generate   # spec + overrides.yaml → registry.gen.go + golden snapshot
 make test       # go vet + unit + E2E (httptest) tests
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and
+[SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+## License
+
+[MIT](LICENSE) © infrabay.
+
+`internal/spec/peopleforce-openapi.json` is PeopleForce's published API
+description, vendored unchanged so builds are reproducible. It belongs to
+PeopleForce and is not covered by this repository's license.

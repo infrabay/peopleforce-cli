@@ -31,7 +31,7 @@ func newEmployeesBulkUpdateCommand(app *App) *cobra.Command {
 		Long: `Reads update records from --input and applies each as PUT /employees/{id},
 reusing a single connection. Input is NDJSON — one JSON object per line:
 
-  {"id": 8321, "set": {"github": "kam1kaze"}}
+  {"id": 8321, "set": {"github": "octocat"}}
 
 (a JSON array of the same objects is also accepted). The report on stdout is
 NDJSON, one line per record, in input order:
@@ -51,7 +51,7 @@ with the remainder rather than the whole file.
 --dry-run previews the whole batch without sending anything.`,
 		Example: `  peopleforce employees bulk-update --input @updates.jsonl
   peopleforce employees bulk-update --input @updates.jsonl --dry-run
-  printf '%s\n' '{"id":8321,"set":{"github":"kam1kaze"}}' | peopleforce employees bulk-update --input -`,
+  printf '%s\n' '{"id":8321,"set":{"github":"octocat"}}' | peopleforce employees bulk-update --input -`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBulkUpdate(app, inputArg)
