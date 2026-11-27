@@ -25,6 +25,9 @@ Homebrew (macOS, Linux):
 brew install infrabay/tap/peopleforce
 ```
 
+The cask needs Homebrew 6.0.13 or newer; run `brew update` if it fails to
+load.
+
 With Go (the version in `go.mod` or newer):
 
 ```bash
