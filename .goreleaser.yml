@@ -76,9 +76,13 @@ homebrew_casks:
     skip_upload: auto
     hooks:
       post:
-        # The binaries are not notarized, so Gatekeeper would quarantine the
-        # downloaded binary and refuse to run it.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/peopleforce"]
+        # The binaries are not notarized: Homebrew marks the download with the
+        # quarantine attribute, and Gatekeeper would refuse to run it.
+        # install_steps renders as the cask's postflight_steps, Homebrew's
+        # declarative DSL that deprecates Ruby postflight blocks; the cask
+        # needs Homebrew 6.0.13 or newer to load. As with the old
+        # system_command hook, a failed xattr fails the install.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/peopleforce"]
           end
